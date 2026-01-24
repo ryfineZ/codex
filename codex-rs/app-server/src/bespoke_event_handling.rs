@@ -1311,6 +1311,7 @@ async fn record_plan_output(
         return;
     }
     // In plan mode we rely on the completed assistant message as the plan payload.
+    summary.last_agent_message_id = Some(agent_message.id.clone());
     summary.last_agent_message_text = Some(agent_message_text(agent_message));
 }
 
@@ -1318,12 +1319,14 @@ async fn emit_plan_item(
     conversation_id: ThreadId,
     event_turn_id: &str,
     text: String,
+    agent_message_id: String,
     outgoing: &OutgoingMessageSender,
 ) {
     let plan_item_id = format!("{event_turn_id}-plan");
     let item = ThreadItem::Plan {
         id: plan_item_id,
         text,
+        agent_message_id,
     };
     let started = ItemStartedNotification {
         thread_id: conversation_id.to_string(),
@@ -1362,6 +1365,7 @@ async fn handle_turn_complete(
     let TurnSummary {
         last_error,
         collaboration_mode_kind,
+        last_agent_message_id,
         last_agent_message_text,
         ..
     } = turn_summary;
@@ -1374,9 +1378,17 @@ async fn handle_turn_complete(
 
     if matches!(status, TurnStatus::Completed)
         && plan_mode
+        && let Some(agent_message_id) = last_agent_message_id
         && let Some(text) = last_agent_message_text
     {
-        emit_plan_item(conversation_id, &event_turn_id, text, outgoing).await;
+        emit_plan_item(
+            conversation_id,
+            &event_turn_id,
+            text,
+            agent_message_id,
+            outgoing,
+        )
+        .await;
     }
     emit_turn_completed_with_status(conversation_id, event_turn_id, status, error, outgoing).await;
 }
@@ -2134,9 +2146,11 @@ mod tests {
         let outgoing = Arc::new(OutgoingMessageSender::new(tx));
 
         let plan_text = "Final plan text".to_string();
+        let agent_message_id = "msg-plan".to_string();
         let expected_item = ThreadItem::Plan {
             id: format!("{event_turn_id}-plan"),
             text: plan_text.clone(),
+            agent_message_id: agent_message_id.clone(),
         };
 
         {
@@ -2145,6 +2159,7 @@ mod tests {
                 conversation_id,
                 TurnSummary {
                     collaboration_mode_kind: Some(ModeKind::Plan),
+                    last_agent_message_id: Some(agent_message_id),
                     last_agent_message_text: Some(plan_text.clone()),
                     ..Default::default()
                 },
