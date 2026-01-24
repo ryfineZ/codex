@@ -603,6 +603,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::AgentMessageContentDelta(event) => {
+            // Record deltas early so we can still emit a plan item at turn end even if the
+            // stream errors or is interrupted before an `ItemCompleted` arrives.
             record_plan_output_delta(
                 conversation_id,
                 &event.item_id,
@@ -1312,6 +1314,10 @@ fn agent_message_text(agent_message: &codex_protocol::items::AgentMessageItem) -
         .collect()
 }
 
+/// Record streamed assistant output as the plan-mode render signal.
+/// Deltas can arrive without a matching `ItemCompleted` (interrupts, stream
+/// errors, retries), so we accumulate them and mark the turn as having plan
+/// output as soon as we observe plan-mode assistant text.
 async fn record_plan_output_delta(
     conversation_id: ThreadId,
     item_id: &str,
@@ -1323,6 +1329,8 @@ async fn record_plan_output_delta(
     if !is_plan_mode(summary) {
         return;
     }
+    // Accumulate assistant output per item so we can later synthesize a plan
+    // item from the final assistant message, independent of the `update_plan` tool.
     let text = summary
         .agent_message_text_by_id
         .entry(item_id.to_string())
