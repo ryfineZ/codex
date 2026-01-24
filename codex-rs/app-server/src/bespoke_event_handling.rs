@@ -1,5 +1,4 @@
 use crate::codex_message_processor::ApiVersion;
-use crate::codex_message_processor::CollaborationModeKindStore;
 use crate::codex_message_processor::PendingInterrupts;
 use crate::codex_message_processor::PendingRollbacks;
 use crate::codex_message_processor::TurnSummary;
@@ -84,6 +83,7 @@ use codex_core::protocol::Op;
 use codex_core::protocol::ReviewDecision;
 use codex_core::protocol::TokenCountEvent;
 use codex_core::protocol::TurnDiffEvent;
+use codex_core::protocol::TurnStartedEvent;
 use codex_core::review_format::format_review_findings_block;
 use codex_core::review_prompts;
 use codex_protocol::ThreadId;
@@ -112,8 +112,6 @@ pub(crate) async fn apply_bespoke_event_handling(
     pending_interrupts: PendingInterrupts,
     pending_rollbacks: PendingRollbacks,
     turn_summary_store: TurnSummaryStore,
-    collaboration_mode_store: CollaborationModeKindStore,
-    default_mode_kind: ModeKind,
     api_version: ApiVersion,
     fallback_model_provider: String,
 ) {
@@ -122,17 +120,19 @@ pub(crate) async fn apply_bespoke_event_handling(
         msg,
     } = event;
     match msg {
+        EventMsg::TurnStarted(TurnStartedEvent {
+            collaboration_mode_kind,
+            ..
+        }) => {
+            let mut summaries = turn_summary_store.lock().await;
+            let summary = summaries.entry(conversation_id).or_default();
+            // Capture the per-turn collaboration mode snapshot for plan-mode rendering.
+            summary.collaboration_mode_kind = Some(collaboration_mode_kind);
+        }
         EventMsg::TurnComplete(_ev) => {
-            let plan_mode = is_plan_mode(
-                conversation_id,
-                &collaboration_mode_store,
-                default_mode_kind,
-            )
-            .await;
             handle_turn_complete(
                 conversation_id,
                 event_turn_id,
-                plan_mode,
                 &outgoing,
                 &turn_summary_store,
             )
@@ -603,14 +603,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::AgentMessageContentDelta(event) => {
-            if should_suppress_agent_message(
-                conversation_id,
-                &collaboration_mode_store,
-                default_mode_kind,
-                &turn_summary_store,
-            )
-            .await
-            {
+            if should_suppress_agent_message(conversation_id, &turn_summary_store).await {
                 // Once we have a plan update in plan mode, we render the synthesized plan item instead.
                 return;
             }
@@ -788,13 +781,7 @@ pub(crate) async fn apply_bespoke_event_handling(
         EventMsg::ItemStarted(item_started_event) => {
             let is_agent_message = matches!(&item_started_event.item, TurnItem::AgentMessage(_));
             if is_agent_message
-                && should_suppress_agent_message(
-                    conversation_id,
-                    &collaboration_mode_store,
-                    default_mode_kind,
-                    &turn_summary_store,
-                )
-                .await
+                && should_suppress_agent_message(conversation_id, &turn_summary_store).await
             {
                 return;
             }
@@ -811,13 +798,7 @@ pub(crate) async fn apply_bespoke_event_handling(
         EventMsg::ItemCompleted(item_completed_event) => {
             let is_agent_message = matches!(&item_completed_event.item, TurnItem::AgentMessage(_));
             if is_agent_message
-                && should_suppress_agent_message(
-                    conversation_id,
-                    &collaboration_mode_store,
-                    default_mode_kind,
-                    &turn_summary_store,
-                )
-                .await
+                && should_suppress_agent_message(conversation_id, &turn_summary_store).await
             {
                 return;
             }
@@ -1324,43 +1305,22 @@ async fn maybe_emit_raw_response_item_completed(
         .await;
 }
 
-async fn current_mode_kind(
-    conversation_id: ThreadId,
-    collaboration_mode_store: &CollaborationModeKindStore,
-    default_mode_kind: ModeKind,
-) -> ModeKind {
-    let map = collaboration_mode_store.lock().await;
-    map.get(&conversation_id)
-        .copied()
-        .unwrap_or(default_mode_kind)
-}
-
-async fn is_plan_mode(
-    conversation_id: ThreadId,
-    collaboration_mode_store: &CollaborationModeKindStore,
-    default_mode_kind: ModeKind,
-) -> bool {
-    current_mode_kind(conversation_id, collaboration_mode_store, default_mode_kind).await
-        == ModeKind::Plan
-}
-
-async fn plan_update_observed(
+async fn plan_mode_with_plan_update_observed(
     conversation_id: ThreadId,
     turn_summary_store: &TurnSummaryStore,
 ) -> bool {
     let map = turn_summary_store.lock().await;
-    map.get(&conversation_id)
-        .is_some_and(|summary| summary.last_plan_update.is_some())
+    map.get(&conversation_id).is_some_and(|summary| {
+        summary.collaboration_mode_kind == Some(ModeKind::Plan)
+            && summary.last_plan_update.is_some()
+    })
 }
 
 async fn should_suppress_agent_message(
     conversation_id: ThreadId,
-    collaboration_mode_store: &CollaborationModeKindStore,
-    default_mode_kind: ModeKind,
     turn_summary_store: &TurnSummaryStore,
 ) -> bool {
-    is_plan_mode(conversation_id, collaboration_mode_store, default_mode_kind).await
-        && plan_update_observed(conversation_id, turn_summary_store).await
+    plan_mode_with_plan_update_observed(conversation_id, turn_summary_store).await
 }
 
 async fn emit_plan_item(
@@ -1409,7 +1369,6 @@ async fn find_and_remove_turn_summary(
 async fn handle_turn_complete(
     conversation_id: ThreadId,
     event_turn_id: String,
-    plan_mode: bool,
     outgoing: &OutgoingMessageSender,
     turn_summary_store: &TurnSummaryStore,
 ) {
@@ -1418,8 +1377,10 @@ async fn handle_turn_complete(
     let TurnSummary {
         last_error,
         last_plan_update,
+        collaboration_mode_kind,
         ..
     } = turn_summary;
+    let plan_mode = collaboration_mode_kind == Some(ModeKind::Plan);
 
     let (status, error) = match last_error {
         Some(error) => (TurnStatus::Failed, Some(error)),
@@ -1954,6 +1915,7 @@ mod tests {
     use codex_core::protocol::RateLimitWindow;
     use codex_core::protocol::TokenUsage;
     use codex_core::protocol::TokenUsageInfo;
+    use codex_protocol::config_types::ModeKind;
     use codex_protocol::plan_tool::PlanItemArg;
     use codex_protocol::plan_tool::StepStatus;
     use mcp_types::CallToolResult;
@@ -2017,7 +1979,6 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
-            false,
             &outgoing,
             &turn_summary_store,
         )
@@ -2102,7 +2063,6 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
-            false,
             &outgoing,
             &turn_summary_store,
         )
@@ -2230,6 +2190,7 @@ mod tests {
                 conversation_id,
                 TurnSummary {
                     last_plan_update: Some(plan_update),
+                    collaboration_mode_kind: Some(ModeKind::Plan),
                     ..Default::default()
                 },
             );
@@ -2238,7 +2199,6 @@ mod tests {
         handle_turn_complete(
             conversation_id,
             event_turn_id.clone(),
-            true,
             &outgoing,
             &turn_summary_store,
         )
@@ -2455,7 +2415,6 @@ mod tests {
         handle_turn_complete(
             conversation_a,
             a_turn1.clone(),
-            false,
             &outgoing,
             &turn_summary_store,
         )
@@ -2476,7 +2435,6 @@ mod tests {
         handle_turn_complete(
             conversation_b,
             b_turn1.clone(),
-            false,
             &outgoing,
             &turn_summary_store,
         )
@@ -2487,7 +2445,6 @@ mod tests {
         handle_turn_complete(
             conversation_a,
             a_turn2.clone(),
-            false,
             &outgoing,
             &turn_summary_store,
         )
