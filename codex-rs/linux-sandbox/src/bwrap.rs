@@ -77,7 +77,7 @@ pub(crate) fn create_bwrap_command_args(
 /// 2. `--bind <root> <root>` re-enables writes for allowed roots.
 /// 3. `--ro-bind <subpath> <subpath>` re-applies read-only protections under
 ///    those writable roots so protected subpaths win.
-/// 4. `--bind /dev/null /dev/null` preserves the common sink even under a
+/// 4. `--dev-bind /dev/null /dev/null` preserves the common sink even under a
 ///    read-only root.
 fn create_filesystem_args(sandbox_policy: &SandboxPolicy, cwd: &Path) -> Result<Vec<String>> {
     let writable_roots = sandbox_policy.get_writable_roots_with_cwd(cwd);
@@ -129,8 +129,8 @@ fn create_filesystem_args(sandbox_policy: &SandboxPolicy, cwd: &Path) -> Result<
         }
     }
 
-    // Ensure `/dev/null` remains writable regardless of the root bind.
-    args.push("--bind".to_string());
+    // Ensure `/dev/null` remains usable regardless of the root bind.
+    args.push("--dev-bind".to_string());
     args.push("/dev/null".to_string());
     args.push("/dev/null".to_string());
 
