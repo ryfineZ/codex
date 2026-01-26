@@ -7,6 +7,7 @@
 use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
+use crate::app_event::ForkPanePlacement;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::history_cell::UserHistoryCell;
@@ -2457,7 +2458,10 @@ async fn slash_fork_requests_current_fork() {
 
     chat.dispatch_command(SlashCommand::Fork);
 
-    assert_matches!(rx.try_recv(), Ok(AppEvent::ForkCurrentSession));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ForkCurrentSession { placement: None })
+    );
 }
 
 #[tokio::test]

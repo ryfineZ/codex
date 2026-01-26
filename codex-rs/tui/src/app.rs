@@ -1,6 +1,7 @@
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
+use crate::app_event::ForkPanePlacement;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 #[cfg(target_os = "windows")]
@@ -170,39 +171,107 @@ fn resume_command_parts(exe: &Path, thread_id: &ThreadId) -> Vec<String> {
     ]
 }
 
-fn build_zellij_new_pane_args(resume_command: &[String]) -> Vec<String> {
+fn zellij_direction(placement: ForkPanePlacement) -> Option<&'static str> {
+    match placement {
+        ForkPanePlacement::Right => Some("right"),
+        ForkPanePlacement::Down => Some("down"),
+        _ => None,
+    }
+}
+
+fn build_zellij_new_pane_args(
+    resume_command: &[String],
+    placement: Option<ForkPanePlacement>,
+) -> Vec<String> {
     let mut args = vec![
         "action".to_string(),
         "new-pane".to_string(),
         "--close-on-exit".to_string(),
-        "--".to_string(),
     ];
+    if let Some(placement) = placement {
+        if placement == ForkPanePlacement::Float {
+            args.push("--floating".to_string());
+        } else if let Some(direction) = zellij_direction(placement) {
+            args.push("--direction".to_string());
+            args.push(direction.to_string());
+        } else {
+            unreachable!("invalid zellij placement");
+        }
+    }
+    args.push("--".to_string());
     args.extend(resume_command.iter().cloned());
     args
 }
 
-fn build_tmux_new_pane_args(resume_command: &[String]) -> Vec<String> {
+fn tmux_split_flags(placement: Option<ForkPanePlacement>) -> [&'static str; 2] {
+    match placement {
+        None | Some(ForkPanePlacement::Right) => ["-h", ""],
+        Some(ForkPanePlacement::Left) => ["-h", "-b"],
+        Some(ForkPanePlacement::Down) => ["-v", ""],
+        Some(ForkPanePlacement::Up) => ["-v", "-b"],
+        _ => unreachable!("invalid tmux placement"),
+    }
+}
+
+fn build_tmux_new_pane_args(
+    resume_command: &[String],
+    placement: Option<ForkPanePlacement>,
+) -> Vec<String> {
     let command = try_join(resume_command.iter().map(String::as_str))
         .unwrap_or_else(|_| resume_command.join(" "));
-    vec!["split-window".to_string(), "-h".to_string(), command]
+    let flags = tmux_split_flags(placement);
+    let mut args = vec!["split-window".to_string(), flags[0].to_string()];
+    if !flags[1].is_empty() {
+        args.push(flags[1].to_string());
+    }
+    args.push(command);
+    args
 }
 
 fn fork_spawn_config(
     multiplexer: &Multiplexer,
     exe: &Path,
     thread_id: &ThreadId,
+    placement: Option<ForkPanePlacement>,
 ) -> MultiplexerSpawnConfig {
     let resume_command = resume_command_parts(exe, thread_id);
     match multiplexer {
         Multiplexer::Zellij {} => MultiplexerSpawnConfig {
             program: "zellij",
-            args: build_zellij_new_pane_args(&resume_command),
+            args: build_zellij_new_pane_args(&resume_command, placement),
             description: "Zellij pane",
         },
         Multiplexer::Tmux { .. } => MultiplexerSpawnConfig {
             program: "tmux",
-            args: build_tmux_new_pane_args(&resume_command),
+            args: build_tmux_new_pane_args(&resume_command, placement),
             description: "tmux pane",
+        },
+    }
+}
+
+const TMUX_FLOAT_UNSUPPORTED_MESSAGE: &str = "tmux does not support /fork float.";
+const ZELLIJ_UNSUPPORTED_MESSAGE: &str = "Zellij only supports /fork [right|down|float].";
+
+fn validate_fork_placement(placement: Option<ForkPanePlacement>) -> Result<(), String> {
+    let terminal_info = terminal_info();
+    let Some(multiplexer) = terminal_info.multiplexer.as_ref() else {
+        return Ok(());
+    };
+    match multiplexer {
+        Multiplexer::Zellij {} => match placement {
+            None
+            | Some(ForkPanePlacement::Right)
+            | Some(ForkPanePlacement::Down)
+            | Some(ForkPanePlacement::Float) => Ok(()),
+            _ => Err(ZELLIJ_UNSUPPORTED_MESSAGE.to_string()),
+        },
+        Multiplexer::Tmux { .. } => match placement {
+            None
+            | Some(ForkPanePlacement::Left)
+            | Some(ForkPanePlacement::Right)
+            | Some(ForkPanePlacement::Up)
+            | Some(ForkPanePlacement::Down) => Ok(()),
+            _ => Err(TMUX_FLOAT_UNSUPPORTED_MESSAGE.to_string()),
         },
     }
 }
@@ -948,13 +1017,14 @@ impl App {
         &mut self,
         forked_thread_id: ThreadId,
         forked_thread: &Arc<CodexThread>,
+        placement: Option<ForkPanePlacement>,
     ) -> bool {
         let terminal_info = terminal_info();
         let Some(multiplexer) = terminal_info.multiplexer.as_ref() else {
             return false;
         };
         let exe = codex_executable();
-        let config = fork_spawn_config(multiplexer, &exe, &forked_thread_id);
+        let config = fork_spawn_config(multiplexer, &exe, &forked_thread_id, placement);
         let description = config.description;
         if let Err(err) = spawn_fork_in_new_pane(config).await {
             self.chat_widget.add_error_message(format!(
@@ -1496,7 +1566,16 @@ impl App {
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::ForkCurrentSession => {
+            AppEvent::ForkCurrentSession { placement } => {
+                // If we're in a terminal multiplexer, validate the placement argument before forking.
+                if self.in_terminal_multiplexer()
+                    && let Err(message) = validate_fork_placement(placement)
+                {
+                    self.chat_widget.add_error_message(message);
+                    tui.frame_requester().schedule_frame();
+                    return Ok(AppRunControl::Continue);
+                }
+
                 let summary =
                     session_summary(self.chat_widget.token_usage(), self.chat_widget.thread_id());
                 if let Some(path) = self.chat_widget.rollout_path() {
@@ -1508,7 +1587,11 @@ impl App {
                         Ok(forked) => {
                             if self.in_terminal_multiplexer() {
                                 if self
-                                    .try_spawn_fork_in_new_pane(forked.thread_id, &forked.thread)
+                                    .try_spawn_fork_in_new_pane(
+                                        forked.thread_id,
+                                        &forked.thread,
+                                        placement,
+                                    )
                                     .await
                                 {
                                     tui.frame_requester().schedule_frame();
