@@ -1602,8 +1602,10 @@ dependencies = [
  "libc",
  "pretty_assertions",
  "seccompiler",
+ "serde_json",
  "tempfile",
  "tokio",
+ "which",
 ]
 
 [[package]]
