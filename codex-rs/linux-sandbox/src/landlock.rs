@@ -40,12 +40,16 @@ use seccompiler::apply_filter;
 /// Filesystem restrictions are intentionally handled by bubblewrap.
 pub(crate) fn apply_sandbox_policy_to_current_thread(
     sandbox_policy: &SandboxPolicy,
-    _cwd: &Path,
+    cwd: &Path,
+    apply_landlock_fs: bool,
 ) -> Result<()> {
     // `PR_SET_NO_NEW_PRIVS` is required for seccomp, but it also prevents
-    // setuid privilege elevation. Many `bwrap` deployments rely on setuid,
-    // so we only enable this when we actually need seccomp.
-    if !sandbox_policy.has_full_network_access() {
+    // setuid privilege elevation. Many `bwrap` deployments rely on setuid, so
+    // we avoid this unless we need seccomp or we are explicitly using the
+    // legacy Landlock filesystem pipeline.
+    if !sandbox_policy.has_full_network_access()
+        || (apply_landlock_fs && !sandbox_policy.has_full_disk_write_access())
+    {
         set_no_new_privs()?;
     }
 
@@ -53,8 +57,14 @@ pub(crate) fn apply_sandbox_policy_to_current_thread(
         install_network_seccomp_filter_on_current_thread()?;
     }
 
-    // Filesystem restrictions are enforced by bubblewrap in `linux_run_main`.
-    // We intentionally do not apply Landlock here while prototyping bwrap.
+    if apply_landlock_fs && !sandbox_policy.has_full_disk_write_access() {
+        let writable_roots = sandbox_policy
+            .get_writable_roots_with_cwd(cwd)
+            .into_iter()
+            .map(|writable_root| writable_root.root)
+            .collect();
+        install_filesystem_landlock_rules_on_current_thread(writable_roots)?;
+    }
 
     // TODO(ragona): Add appropriate restrictions if
     // `sandbox_policy.has_full_disk_read_access()` is `false`.
@@ -80,7 +90,6 @@ fn set_no_new_privs() -> Result<()> {
 ///
 /// Note: this is currently unused because filesystem sandboxing is performed
 /// via bubblewrap. It is kept for reference and potential fallback use.
-#[allow(dead_code)]
 fn install_filesystem_landlock_rules_on_current_thread(
     writable_roots: Vec<AbsolutePathBuf>,
 ) -> Result<()> {

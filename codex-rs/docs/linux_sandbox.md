@@ -1,26 +1,29 @@
-# Linux Sandbox (bubblewrap + seccomp)
+# Linux Sandbox (Landlock by Default, bubblewrap Opt-in)
 
-The Linux sandbox helper (`codex-linux-sandbox`) combines:
-- in-process restrictions (`PR_SET_NO_NEW_PRIVS` and seccomp), and
-- bubblewrap (`bwrap`) for filesystem isolation.
+The Linux sandbox helper (`codex-linux-sandbox`) supports two filesystem
+pipelines:
+- Legacy (default): mount-based protections plus Landlock enforcement.
+- Opt-in: bubblewrap (`bwrap`) for filesystem isolation plus seccomp.
 
-This mirrors the macOS Seatbelt semantics as closely as practical while
-remaining unprivileged.
+The bubblewrap pipeline can be enabled via the feature flag
+`features.use_linux_sandbox_bwrap = true`.
 
 ## Requirements
 
-- `bwrap` must be installed and available on `PATH`.
+- For the bubblewrap pipeline, `bwrap` must be installed and available on
+  `PATH`.
 
-## Filesystem Semantics
+## Filesystem Semantics (bubblewrap pipeline)
 
-When disk writes are restricted (`read-only` or `workspace-write`), the helper
-builds the filesystem view with bubblewrap in this order:
+When the bubblewrap pipeline is enabled and disk writes are restricted
+(`read-only` or `workspace-write`), the helper builds the filesystem view with
+bubblewrap in this order:
 
 1. `--ro-bind / /` makes the entire filesystem read-only.
 2. `--bind <root> <root>` re-enables writes for each writable root.
 3. `--ro-bind <subpath> <subpath>` re-applies read-only protections under
    writable roots so protected paths win.
-4. `--bind /dev/null /dev/null` preserves the common sink.
+4. `--dev-bind /dev/null /dev/null` preserves the common sink.
 
 Writable roots and protected subpaths are derived from
 `SandboxPolicy::get_writable_roots_with_cwd()`.
@@ -40,8 +43,10 @@ To reduce symlink and path-creation attacks inside writable roots:
 
 ## Process and Network Semantics
 
-- The helper isolates the PID namespace via `--unshare-pid`.
-- By default it mounts a fresh `/proc` via `--proc /proc`.
+- In the bubblewrap pipeline, the helper isolates the PID namespace via
+  `--unshare-pid`.
+- In the bubblewrap pipeline, it mounts a fresh `/proc` via `--proc /proc` by
+  default.
 - In restrictive container environments, you can skip the `/proc` mount with
   the helper flag `--no-proc` while still keeping PID isolation enabled.
 - Network restrictions are enforced with seccomp when network access is
@@ -49,7 +54,5 @@ To reduce symlink and path-creation attacks inside writable roots:
 
 ## Notes
 
-- The CLI still exposes legacy names such as `codex debug landlock`, but the
-  filesystem sandbox is bubblewrap-based.
-- Landlock helpers remain in the codebase as legacy/backup utilities but are
-  not currently used for filesystem enforcement.
+- The CLI still exposes legacy names such as `codex debug landlock`.
+- Landlock remains the default filesystem enforcement pipeline.

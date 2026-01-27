@@ -20,6 +20,12 @@ pub struct LandlockCommand {
     #[arg(long = "sandbox-policy")]
     pub sandbox_policy: codex_core::protocol::SandboxPolicy,
 
+    /// Opt-in: use the bubblewrap-based Linux sandbox pipeline.
+    ///
+    /// When not set, we fall back to the legacy Landlock + mount pipeline.
+    #[arg(long = "use-bwrap-sandbox", hide = true, default_value_t = false)]
+    pub use_bwrap_sandbox: bool,
+
     /// Internal: apply seccomp and `no_new_privs` in the already-sandboxed
     /// process, then exec the user command.
     ///
@@ -50,6 +56,7 @@ pub fn run_main() -> ! {
     let LandlockCommand {
         sandbox_policy_cwd,
         sandbox_policy,
+        use_bwrap_sandbox,
         apply_seccomp_then_exec,
         no_proc,
         command,
@@ -62,7 +69,8 @@ pub fn run_main() -> ! {
     // Inner stage: apply seccomp/no_new_privs after bubblewrap has already
     // established the filesystem view.
     if apply_seccomp_then_exec {
-        if let Err(e) = apply_sandbox_policy_to_current_thread(&sandbox_policy, &sandbox_policy_cwd)
+        if let Err(e) =
+            apply_sandbox_policy_to_current_thread(&sandbox_policy, &sandbox_policy_cwd, false)
         {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
@@ -70,27 +78,36 @@ pub fn run_main() -> ! {
     }
 
     let command = if sandbox_policy.has_full_disk_write_access() {
-        if let Err(e) = apply_sandbox_policy_to_current_thread(&sandbox_policy, &sandbox_policy_cwd)
+        if let Err(e) =
+            apply_sandbox_policy_to_current_thread(&sandbox_policy, &sandbox_policy_cwd, false)
         {
             panic!("error applying Linux sandbox restrictions: {e:?}");
         }
         command
-    } else {
+    } else if use_bwrap_sandbox {
         // Outer stage: bubblewrap first, then re-enter this binary in the
         // sandboxed environment to apply seccomp.
         ensure_bwrap_available();
-        let inner = build_inner_seccomp_command(&sandbox_policy_cwd, &sandbox_policy, command);
+        let inner = build_inner_seccomp_command(
+            &sandbox_policy_cwd,
+            &sandbox_policy,
+            use_bwrap_sandbox,
+            command,
+        );
         let options = BwrapOptions {
             mount_proc: !no_proc,
         };
         create_bwrap_command_args(inner, &sandbox_policy, &sandbox_policy_cwd, options)
             .unwrap_or_else(|err| panic!("error building bubblewrap command: {err:?}"))
+    } else {
+        // Legacy path: Landlock enforcement only.
+        if let Err(e) =
+            apply_sandbox_policy_to_current_thread(&sandbox_policy, &sandbox_policy_cwd, true)
+        {
+            panic!("error applying legacy Linux sandbox restrictions: {e:?}");
+        }
+        command
     };
-
-    if is_debug_bwrap_enabled() {
-        // Debug-only visibility into the exact argv we are about to exec.
-        eprintln!("codex-linux-sandbox exec argv: {command:?}");
-    }
 
     exec_or_panic(command);
 }
@@ -99,6 +116,7 @@ pub fn run_main() -> ! {
 fn build_inner_seccomp_command(
     sandbox_policy_cwd: &PathBuf,
     sandbox_policy: &codex_core::protocol::SandboxPolicy,
+    use_bwrap_sandbox: bool,
     command: Vec<String>,
 ) -> Vec<String> {
     #[expect(clippy::expect_used)]
@@ -108,13 +126,16 @@ fn build_inner_seccomp_command(
 
     let mut inner = vec![
         current_exe.to_string_lossy().to_string(),
-        "--apply-seccomp-then-exec".to_string(),
         "--sandbox-policy-cwd".to_string(),
         sandbox_policy_cwd.to_string_lossy().to_string(),
         "--sandbox-policy".to_string(),
         policy_json,
-        "--".to_string(),
     ];
+    if use_bwrap_sandbox {
+        inner.push("--use-bwrap-sandbox".to_string());
+        inner.push("--apply-seccomp-then-exec".to_string());
+    }
+    inner.push("--".to_string());
     inner.extend(command);
     inner
 }
@@ -156,16 +177,4 @@ Install it and retry. Examples:\n\
 - Arch: pacman -S bubblewrap\n\
 If you are running the Codex Node package, ensure bwrap is installed on the host system."
     );
-}
-
-/// Returns true when debug logging of the bwrap argv should be enabled.
-///
-/// This is intentionally controlled via an environment variable so we do not
-/// need to thread additional flags through `codex-core` while debugging Linux
-/// sandbox failures on devboxes.
-fn is_debug_bwrap_enabled() -> bool {
-    matches!(
-        std::env::var("CODEX_LINUX_SANDBOX_DEBUG"),
-        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true")
-    )
 }

@@ -11,6 +11,8 @@ use crate::exec::ExecToolCallOutput;
 use crate::exec::SandboxType;
 use crate::exec::StdoutStream;
 use crate::exec::execute_exec_env;
+use crate::features::Feature;
+use crate::features::Features;
 use crate::landlock::create_linux_sandbox_command_args;
 use crate::protocol::SandboxPolicy;
 #[cfg(target_os = "macos")]
@@ -97,6 +99,7 @@ impl SandboxManager {
         &self,
         mut spec: CommandSpec,
         policy: &SandboxPolicy,
+        features: &Features,
         sandbox: SandboxType,
         sandbox_policy_cwd: &Path,
         codex_linux_sandbox_exe: Option<&PathBuf>,
@@ -131,8 +134,13 @@ impl SandboxManager {
             SandboxType::LinuxSeccomp => {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
-                let mut args =
-                    create_linux_sandbox_command_args(command.clone(), policy, sandbox_policy_cwd);
+                let use_bwrap_sandbox = features.enabled(Feature::UseLinuxSandboxBwrap);
+                let mut args = create_linux_sandbox_command_args(
+                    command.clone(),
+                    policy,
+                    sandbox_policy_cwd,
+                    use_bwrap_sandbox,
+                );
                 let mut full_command = Vec::with_capacity(1 + args.len());
                 full_command.push(exe.to_string_lossy().to_string());
                 full_command.append(&mut args);

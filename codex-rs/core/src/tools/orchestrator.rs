@@ -98,6 +98,7 @@ impl ToolOrchestrator {
         let initial_attempt = SandboxAttempt {
             sandbox: initial_sandbox,
             policy: &turn_ctx.sandbox_policy,
+            features: &turn_ctx.features,
             manager: &self.sandbox,
             sandbox_cwd: &turn_ctx.cwd,
             codex_linux_sandbox_exe: turn_ctx.codex_linux_sandbox_exe.as_ref(),
@@ -148,6 +149,7 @@ impl ToolOrchestrator {
                 let escalated_attempt = SandboxAttempt {
                     sandbox: crate::exec::SandboxType::None,
                     policy: &turn_ctx.sandbox_policy,
+                    features: &turn_ctx.features,
                     manager: &self.sandbox,
                     sandbox_cwd: &turn_ctx.cwd,
                     codex_linux_sandbox_exe: None,
