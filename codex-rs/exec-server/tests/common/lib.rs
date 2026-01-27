@@ -91,7 +91,7 @@ where
         sandbox_policy: SandboxPolicy::ReadOnly,
         codex_linux_sandbox_exe,
         sandbox_cwd: sandbox_cwd.as_ref().to_path_buf(),
-        use_bwrap_sandbox: false,
+        bwrap_path: None,
     };
     send_sandbox_state_update(sandbox_state, service).await
 }
@@ -119,7 +119,7 @@ where
         },
         codex_linux_sandbox_exe,
         sandbox_cwd: writable_folder.as_ref().to_path_buf(),
-        use_bwrap_sandbox: false,
+        bwrap_path: None,
     };
     send_sandbox_state_update(sandbox_state, service).await
 }

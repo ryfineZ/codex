@@ -11,7 +11,7 @@ On Linux, the bubblewrap pipeline expects `bwrap` (bubblewrap) to be available o
 
 **Current Behavior**
 - Legacy Landlock + mount protections remain the default filesystem pipeline.
-- The bubblewrap pipeline is opt-in via `features.use_linux_sandbox_bwrap = true`.
+- The bubblewrap pipeline is opt-in via `experimental_path_to_linux_sandbox_bwrap = "/path/to/bwrap"`.
 - When enabled, the bubblewrap pipeline applies `PR_SET_NO_NEW_PRIVS` and a seccomp network filter in-process.
 - When enabled, the filesystem is read-only by default via `--ro-bind / /`.
 - When enabled, writable roots are layered with `--bind <root> <root>`.

@@ -5,13 +5,18 @@ pipelines:
 - Legacy (default): mount-based protections plus Landlock enforcement.
 - Opt-in: bubblewrap (`bwrap`) for filesystem isolation plus seccomp.
 
-The bubblewrap pipeline can be enabled via the feature flag
-`features.use_linux_sandbox_bwrap = true`.
+The bubblewrap pipeline can be enabled by setting
+`experimental_path_to_linux_sandbox_bwrap` to the path of the `bwrap` binary,
+for example:
+
+```toml
+experimental_path_to_linux_sandbox_bwrap = "/usr/bin/bwrap"
+```
 
 ## Requirements
 
-- For the bubblewrap pipeline, `bwrap` must be installed and available on
-  `PATH`.
+- For the bubblewrap pipeline, `bwrap` must be installed at the configured
+  path.
 
 ## Filesystem Semantics (bubblewrap pipeline)
 

@@ -271,10 +271,10 @@ pub(crate) trait ToolRuntime<Req, Out>: Approvable<Req> + Sandboxable {
 pub(crate) struct SandboxAttempt<'a> {
     pub sandbox: crate::exec::SandboxType,
     pub policy: &'a crate::protocol::SandboxPolicy,
-    pub(crate) features: &'a crate::features::Features,
     pub(crate) manager: &'a SandboxManager,
     pub(crate) sandbox_cwd: &'a Path,
     pub codex_linux_sandbox_exe: Option<&'a std::path::PathBuf>,
+    pub bwrap_path: Option<&'a std::path::PathBuf>,
 }
 
 impl<'a> SandboxAttempt<'a> {
@@ -285,10 +285,10 @@ impl<'a> SandboxAttempt<'a> {
         self.manager.transform(
             spec,
             self.policy,
-            self.features,
             self.sandbox,
             self.sandbox_cwd,
             self.codex_linux_sandbox_exe,
+            self.bwrap_path,
         )
     }
 }

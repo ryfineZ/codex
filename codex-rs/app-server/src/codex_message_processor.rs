@@ -1284,7 +1284,7 @@ impl CodexMessageProcessor {
         };
 
         let codex_linux_sandbox_exe = self.config.codex_linux_sandbox_exe.clone();
-        let use_bwrap_sandbox = self.config.features.enabled(Feature::UseLinuxSandboxBwrap);
+        let bwrap_path = self.config.experimental_path_to_linux_sandbox_bwrap.clone();
         let outgoing = self.outgoing.clone();
         let req_id = request_id;
         let sandbox_cwd = self.config.cwd.clone();
@@ -1295,7 +1295,7 @@ impl CodexMessageProcessor {
                 &effective_policy,
                 sandbox_cwd.as_path(),
                 &codex_linux_sandbox_exe,
-                use_bwrap_sandbox,
+                bwrap_path.as_ref(),
                 None,
             )
             .await

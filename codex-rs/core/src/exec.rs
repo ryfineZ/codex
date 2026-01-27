@@ -19,8 +19,6 @@ use tokio_util::sync::CancellationToken;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::error::SandboxErr;
-use crate::features::Feature;
-use crate::features::Features;
 use crate::get_platform_sandbox;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -141,7 +139,7 @@ pub async fn process_exec_tool_call(
     sandbox_policy: &SandboxPolicy,
     sandbox_cwd: &Path,
     codex_linux_sandbox_exe: &Option<PathBuf>,
-    use_bwrap_sandbox: bool,
+    bwrap_path: Option<&PathBuf>,
     stdout_stream: Option<StdoutStream>,
 ) -> Result<ExecToolCallOutput> {
     let sandbox_type = match &sandbox_policy {
@@ -180,18 +178,14 @@ pub async fn process_exec_tool_call(
     };
 
     let manager = SandboxManager::new();
-    let mut features = Features::with_defaults();
-    if use_bwrap_sandbox {
-        features.enable(Feature::UseLinuxSandboxBwrap);
-    }
     let exec_env = manager
         .transform(
             spec,
             sandbox_policy,
-            &features,
             sandbox_type,
             sandbox_cwd,
             codex_linux_sandbox_exe.as_ref(),
+            bwrap_path,
         )
         .map_err(CodexErr::from)?;
 
@@ -943,7 +937,7 @@ mod tests {
             &SandboxPolicy::DangerFullAccess,
             cwd.as_path(),
             &None,
-            false,
+            None,
             None,
         )
         .await;

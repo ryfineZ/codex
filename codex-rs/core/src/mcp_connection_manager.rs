@@ -302,13 +302,12 @@ pub struct SandboxState {
     pub sandbox_policy: SandboxPolicy,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub sandbox_cwd: PathBuf,
-    /// When true, opt into the bubblewrap-based Linux sandbox pipeline.
+    /// Optional explicit path to the `bwrap` binary on the host.
     ///
-    /// This is serialized over the MCP sandbox-state channel so remote exec
-    /// surfaces (like exec-server) can match the CLI/app-server feature gate
-    /// without needing to thread the full Features struct.
+    /// When set, remote exec surfaces should opt into the bubblewrap pipeline
+    /// and pass this path through to the Linux sandbox helper.
     #[serde(default)]
-    pub use_bwrap_sandbox: bool,
+    pub bwrap_path: Option<PathBuf>,
 }
 
 /// A thin wrapper around a set of running [`RmcpClient`] instances.
