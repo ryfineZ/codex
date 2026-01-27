@@ -58,6 +58,7 @@ use codex_app_server_protocol::ListConversationsResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
 use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::LoginAccountParams;
+use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LoginApiKeyParams;
 use codex_app_server_protocol::LoginApiKeyResponse;
 use codex_app_server_protocol::LoginChatGptCompleteNotification;
@@ -141,6 +142,7 @@ use codex_core::ThreadConfigSnapshot;
 use codex_core::ThreadManager;
 use codex_core::ThreadSortKey as CoreThreadSortKey;
 use codex_core::auth::CLIENT_ID;
+use codex_core::auth::ExternalAuthState;
 use codex_core::auth::login_with_api_key;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -170,6 +172,7 @@ use codex_core::read_session_meta_line;
 use codex_core::rollout_date_parts;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_core::state_db::{self};
+use codex_core::token_data::parse_id_token;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_feedback::CodexFeedback;
 use codex_login::ServerOptions as LoginServerOptions;
@@ -608,6 +611,22 @@ impl CodexMessageProcessor {
             LoginAccountParams::Chatgpt => {
                 self.login_chatgpt_v2(request_id).await;
             }
+            LoginAccountParams::ChatgptAuthTokens {
+                id_token,
+                access_token,
+            } => {
+                self.login_chatgpt_auth_tokens(request_id, id_token, access_token)
+                    .await;
+            }
+        }
+    }
+
+    fn external_auth_active_error(&self) -> JSONRPCErrorError {
+        JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: "External auth is active. Use account/login/start (chatgptAuthTokens) to update it or account/logout to clear it."
+                .to_string(),
+            data: None,
         }
     }
 
@@ -615,6 +634,10 @@ impl CodexMessageProcessor {
         &mut self,
         params: &LoginApiKeyParams,
     ) -> std::result::Result<(), JSONRPCErrorError> {
+        if self.auth_manager.is_external_auth_active() {
+            return Err(self.external_auth_active_error());
+        }
+
         if matches!(
             self.config.forced_login_method,
             Some(ForcedLoginMethod::Chatgpt)
@@ -706,6 +729,10 @@ impl CodexMessageProcessor {
         &self,
     ) -> std::result::Result<LoginServerOptions, JSONRPCErrorError> {
         let config = self.config.as_ref();
+
+        if self.auth_manager.is_external_auth_active() {
+            return Err(self.external_auth_active_error());
+        }
 
         if matches!(config.forced_login_method, Some(ForcedLoginMethod::Api)) {
             return Err(JSONRPCErrorError {
@@ -965,6 +992,92 @@ impl CodexMessageProcessor {
         }
     }
 
+    async fn login_chatgpt_auth_tokens(
+        &mut self,
+        request_id: RequestId,
+        id_token: String,
+        access_token: String,
+    ) {
+        if matches!(
+            self.config.forced_login_method,
+            Some(ForcedLoginMethod::Api)
+        ) {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: "External ChatGPT auth is disabled. Use API key login instead."
+                    .to_string(),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        // Cancel any active login attempt to avoid persisting managed auth state.
+        {
+            let mut guard = self.active_login.lock().await;
+            if let Some(active) = guard.take() {
+                drop(active);
+            }
+        }
+
+        let id_token_info = match parse_id_token(&id_token) {
+            Ok(info) => info,
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: format!("invalid id token: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        if let Some(expected_workspace) = self.config.forced_chatgpt_workspace_id.as_deref()
+            && id_token_info.chatgpt_account_id.as_deref() != Some(expected_workspace)
+        {
+            let account_id = id_token_info.chatgpt_account_id;
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: format!(
+                    "External auth must use workspace {expected_workspace}, but received {account_id:?}."
+                ),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+
+        let external = ExternalAuthState {
+            access_token,
+            id_token,
+            account_id: id_token_info.chatgpt_account_id,
+        };
+        let _changed = self.auth_manager.set_external_auth(external);
+
+        self.outgoing
+            .send_response(request_id, LoginAccountResponse::ChatgptAuthTokens {})
+            .await;
+
+        let payload_login_completed = AccountLoginCompletedNotification {
+            login_id: None,
+            success: true,
+            error: None,
+        };
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountLoginCompleted(
+                payload_login_completed,
+            ))
+            .await;
+
+        let payload_v2 = AccountUpdatedNotification {
+            auth_mode: self.auth_manager.get_auth_mode(),
+        };
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
+            .await;
+    }
+
     async fn logout_common(&mut self) -> std::result::Result<Option<AuthMode>, JSONRPCErrorError> {
         // Cancel any active login attempt.
         {
@@ -973,6 +1086,8 @@ impl CodexMessageProcessor {
                 drop(active);
             }
         }
+
+        let _cleared_external = self.auth_manager.clear_external_auth();
 
         if let Err(err) = self.auth_manager.logout() {
             return Err(JSONRPCErrorError {
@@ -1027,6 +1142,9 @@ impl CodexMessageProcessor {
     }
 
     async fn refresh_token_if_requested(&self, do_refresh: bool) {
+        if self.auth_manager.is_external_auth_active() {
+            return;
+        }
         if do_refresh && let Err(err) = self.auth_manager.refresh_token().await {
             tracing::warn!("failed to refresh token while getting account: {err}");
         }
@@ -1101,7 +1219,7 @@ impl CodexMessageProcessor {
         let account = match self.auth_manager.auth_cached() {
             Some(auth) => Some(match auth.mode {
                 AuthMode::ApiKey => Account::ApiKey {},
-                AuthMode::ChatGPT => {
+                AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens => {
                     let email = auth.get_account_email();
                     let plan_type = auth.account_plan_type();
 
@@ -1160,7 +1278,7 @@ impl CodexMessageProcessor {
             });
         };
 
-        if auth.mode != AuthMode::ChatGPT {
+        if !matches!(auth.mode, AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens) {
             return Err(JSONRPCErrorError {
                 code: INVALID_REQUEST_ERROR_CODE,
                 message: "chatgpt authentication required to read rate limits".to_string(),
