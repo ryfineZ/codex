@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::ffi::CString;
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::bwrap::BwrapOptions;
