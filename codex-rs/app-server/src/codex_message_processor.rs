@@ -1087,8 +1087,6 @@ impl CodexMessageProcessor {
             }
         }
 
-        let _cleared_external = self.auth_manager.clear_external_auth();
-
         if let Err(err) = self.auth_manager.logout() {
             return Err(JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
