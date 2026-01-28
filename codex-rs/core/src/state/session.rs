@@ -1,5 +1,8 @@
 //! Session-wide mutable state.
 
+use std::collections::HashMap;
+
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use std::collections::HashSet;
 
@@ -22,6 +25,7 @@ pub(crate) struct SessionState {
     /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
     /// timestamp when resuming a session. Remove this once SQLite is in place.
     pub(crate) initial_context_seeded: bool,
+    pending_user_input_items: HashMap<String, ResponseInputItem>,
 }
 
 impl SessionState {
@@ -35,6 +39,7 @@ impl SessionState {
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
             initial_context_seeded: false,
+            pending_user_input_items: HashMap::new(),
         }
     }
 
@@ -111,6 +116,40 @@ impl SessionState {
 
     pub(crate) fn mcp_dependency_prompted(&self) -> HashSet<String> {
         self.mcp_dependency_prompted.clone()
+    }
+
+    pub(crate) fn upsert_pending_user_input_item(
+        &mut self,
+        call_id: String,
+        item: ResponseInputItem,
+    ) -> Option<ResponseInputItem> {
+        self.pending_user_input_items.insert(call_id, item)
+    }
+
+    pub(crate) fn remove_pending_user_input_item(
+        &mut self,
+        call_id: &str,
+    ) -> Option<ResponseInputItem> {
+        self.pending_user_input_items.remove(call_id)
+    }
+
+    pub(crate) fn clear_pending_user_input_items(&mut self) {
+        self.pending_user_input_items.clear();
+    }
+
+    pub(crate) fn take_pending_user_input_items(&mut self) -> Vec<ResponseInputItem> {
+        if self.pending_user_input_items.is_empty() {
+            Vec::with_capacity(0)
+        } else {
+            self.pending_user_input_items
+                .drain()
+                .map(|(_, item)| item)
+                .collect()
+        }
+    }
+
+    pub(crate) fn has_pending_user_input_items(&self) -> bool {
+        !self.pending_user_input_items.is_empty()
     }
 }
 
