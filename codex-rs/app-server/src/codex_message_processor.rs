@@ -142,8 +142,8 @@ use codex_core::ThreadConfigSnapshot;
 use codex_core::ThreadManager;
 use codex_core::ThreadSortKey as CoreThreadSortKey;
 use codex_core::auth::CLIENT_ID;
-use codex_core::auth::ExternalAuthState;
 use codex_core::auth::login_with_api_key;
+use codex_core::auth::login_with_chatgpt_auth_tokens;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigService;
@@ -1048,12 +1048,18 @@ impl CodexMessageProcessor {
             return;
         }
 
-        let external = ExternalAuthState {
-            access_token,
-            id_token,
-            account_id: id_token_info.chatgpt_account_id,
-        };
-        let _changed = self.auth_manager.set_external_auth(external);
+        if let Err(err) =
+            login_with_chatgpt_auth_tokens(&self.config.codex_home, &id_token, &access_token)
+        {
+            let error = JSONRPCErrorError {
+                code: INTERNAL_ERROR_CODE,
+                message: format!("failed to set external auth: {err}"),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        }
+        self.auth_manager.reload();
 
         self.outgoing
             .send_response(request_id, LoginAccountResponse::ChatgptAuthTokens {})
