@@ -2566,6 +2566,16 @@ impl ChatWidget {
             SlashCommand::Personality => {
                 self.open_personality_popup();
             }
+            SlashCommand::Plan => {
+                if !self.collaboration_modes_enabled() {
+                    return;
+                }
+                if let Some(mask) = collaboration_modes::plan_mask(self.models_manager.as_ref()) {
+                    self.set_collaboration_mask(mask);
+                } else {
+                    self.add_info_message("Plan mode unavailable right now.".to_string(), None);
+                }
+            }
             SlashCommand::Collab => {
                 if self.collaboration_modes_enabled() {
                     self.open_collaboration_modes_popup();
@@ -2739,11 +2749,9 @@ impl ChatWidget {
 
         let trimmed = args.trim();
         match cmd {
-            SlashCommand::Collab => {
+            SlashCommand::Collab | SlashCommand::Plan => {
                 let _ = trimmed;
-                if self.collaboration_modes_enabled() {
-                    self.open_collaboration_modes_popup();
-                }
+                self.dispatch_command(cmd);
             }
             SlashCommand::Review if !trimmed.is_empty() => {
                 self.submit_op(Op::Review {
