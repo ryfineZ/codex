@@ -29,6 +29,8 @@ use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
+use crate::terminal_multiplexer::spawn_fork_in_new_pane;
+use crate::terminal_multiplexer::validate_fork_placement;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -59,7 +61,6 @@ use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::SkillErrorInfo;
 use codex_core::protocol::TokenUsage;
-use codex_core::terminal::Multiplexer;
 use codex_core::terminal::terminal_info;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -83,14 +84,12 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
-use shlex::try_join;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -151,147 +150,6 @@ fn session_summary(token_usage: TokenUsage, thread_id: Option<ThreadId>) -> Opti
         usage_line,
         resume_command,
     })
-}
-
-fn codex_executable() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("codex"))
-}
-
-struct MultiplexerSpawnConfig {
-    program: &'static str,
-    args: Vec<String>,
-    description: &'static str,
-}
-
-fn resume_command_parts(exe: &Path, thread_id: &ThreadId) -> Vec<String> {
-    vec![
-        exe.display().to_string(),
-        "resume".to_string(),
-        thread_id.to_string(),
-    ]
-}
-
-fn zellij_direction(placement: ForkPanePlacement) -> Option<&'static str> {
-    match placement {
-        ForkPanePlacement::Right => Some("right"),
-        ForkPanePlacement::Down => Some("down"),
-        _ => None,
-    }
-}
-
-fn build_zellij_new_pane_args(
-    resume_command: &[String],
-    placement: Option<ForkPanePlacement>,
-) -> Vec<String> {
-    let mut args = vec![
-        "action".to_string(),
-        "new-pane".to_string(),
-        "--close-on-exit".to_string(),
-    ];
-    if let Some(placement) = placement {
-        if placement == ForkPanePlacement::Float {
-            args.push("--floating".to_string());
-        } else if let Some(direction) = zellij_direction(placement) {
-            args.push("--direction".to_string());
-            args.push(direction.to_string());
-        } else {
-            unreachable!("invalid zellij placement");
-        }
-    }
-    args.push("--".to_string());
-    args.extend(resume_command.iter().cloned());
-    args
-}
-
-fn tmux_split_flags(placement: Option<ForkPanePlacement>) -> [&'static str; 2] {
-    match placement {
-        None | Some(ForkPanePlacement::Right) => ["-h", ""],
-        Some(ForkPanePlacement::Left) => ["-h", "-b"],
-        Some(ForkPanePlacement::Down) => ["-v", ""],
-        Some(ForkPanePlacement::Up) => ["-v", "-b"],
-        _ => unreachable!("invalid tmux placement"),
-    }
-}
-
-fn build_tmux_new_pane_args(
-    resume_command: &[String],
-    placement: Option<ForkPanePlacement>,
-) -> Vec<String> {
-    let command = try_join(resume_command.iter().map(String::as_str))
-        .unwrap_or_else(|_| resume_command.join(" "));
-    let flags = tmux_split_flags(placement);
-    let mut args = vec!["split-window".to_string(), flags[0].to_string()];
-    if !flags[1].is_empty() {
-        args.push(flags[1].to_string());
-    }
-    args.push(command);
-    args
-}
-
-fn fork_spawn_config(
-    multiplexer: &Multiplexer,
-    exe: &Path,
-    thread_id: &ThreadId,
-    placement: Option<ForkPanePlacement>,
-) -> MultiplexerSpawnConfig {
-    let resume_command = resume_command_parts(exe, thread_id);
-    match multiplexer {
-        Multiplexer::Zellij {} => MultiplexerSpawnConfig {
-            program: "zellij",
-            args: build_zellij_new_pane_args(&resume_command, placement),
-            description: "Zellij pane",
-        },
-        Multiplexer::Tmux { .. } => MultiplexerSpawnConfig {
-            program: "tmux",
-            args: build_tmux_new_pane_args(&resume_command, placement),
-            description: "tmux pane",
-        },
-    }
-}
-
-const TMUX_FLOAT_UNSUPPORTED_MESSAGE: &str = "tmux does not support /fork float.";
-const ZELLIJ_UNSUPPORTED_MESSAGE: &str = "Zellij only supports /fork [right|down|float].";
-const FORK_PLACEMENT_REQUIRES_MULTIPLEXER_MESSAGE: &str =
-    "Fork pane placement requires a terminal multiplexer.";
-
-fn validate_fork_placement(placement: Option<ForkPanePlacement>) -> Result<(), String> {
-    let terminal_info = terminal_info();
-    let Some(multiplexer) = terminal_info.multiplexer.as_ref() else {
-        return match placement {
-            Some(_) => Err(FORK_PLACEMENT_REQUIRES_MULTIPLEXER_MESSAGE.to_string()),
-            None => Ok(()),
-        };
-    };
-    match multiplexer {
-        Multiplexer::Zellij {} => match placement {
-            None
-            | Some(ForkPanePlacement::Right)
-            | Some(ForkPanePlacement::Down)
-            | Some(ForkPanePlacement::Float) => Ok(()),
-            _ => Err(ZELLIJ_UNSUPPORTED_MESSAGE.to_string()),
-        },
-        Multiplexer::Tmux { .. } => match placement {
-            None
-            | Some(ForkPanePlacement::Left)
-            | Some(ForkPanePlacement::Right)
-            | Some(ForkPanePlacement::Up)
-            | Some(ForkPanePlacement::Down) => Ok(()),
-            _ => Err(TMUX_FLOAT_UNSUPPORTED_MESSAGE.to_string()),
-        },
-    }
-}
-
-async fn spawn_fork_in_new_pane(config: MultiplexerSpawnConfig) -> Result<(), String> {
-    let program = config.program;
-    let args = config.args;
-    let status = tokio::task::spawn_blocking(move || Command::new(program).args(args).status())
-        .await
-        .map_err(|err| format!("failed to spawn {program} pane: {err}"))?;
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("{program} exited with status {status}")),
-        Err(err) => Err(format!("failed to run {program}: {err}")),
-    }
 }
 
 fn errors_for_cwd(cwd: &Path, response: &ListSkillsResponseEvent) -> Vec<SkillErrorInfo> {
@@ -1028,15 +886,16 @@ impl App {
         let Some(multiplexer) = terminal_info.multiplexer.as_ref() else {
             return false;
         };
-        let exe = codex_executable();
-        let config = fork_spawn_config(multiplexer, &exe, &forked_thread_id, placement);
-        let description = config.description;
-        if let Err(err) = spawn_fork_in_new_pane(config).await {
-            self.chat_widget.add_error_message(format!(
-                "Forked session created but failed to open a new {description}: {err}"
-            ));
-            return false;
-        }
+        let description =
+            match spawn_fork_in_new_pane(multiplexer, &forked_thread_id, placement).await {
+                Ok(description) => description,
+                Err(err) => {
+                    self.chat_widget.add_error_message(format!(
+                        "Forked session created but failed to open a new pane: {err}"
+                    ));
+                    return false;
+                }
+            };
 
         self.suppressed_thread_created.insert(forked_thread_id);
         if let Err(err) = forked_thread.submit(Op::Shutdown).await {
