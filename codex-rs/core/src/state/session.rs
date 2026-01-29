@@ -26,12 +26,14 @@ pub(crate) struct SessionState {
     /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
     /// timestamp when resuming a session. Remove this once SQLite is in place.
     pub(crate) initial_context_seeded: bool,
-    /// Buffered `function_call_output` items for `request_user_input` tool calls that were
-    /// interrupted before completion.
+    /// Buffered `function_call_output` payloads for interrupted `request_user_input` tool calls.
     ///
-    /// Keyed by `call_id` (the tool call id) so each in-flight `request_user_input` call can be
-    /// replayed exactly once on the next user turn.
-    pending_user_input_items: HashMap<String, ResponseInputItem>,
+    /// Keyed by `call_id` (the tool call id). The value is a `ResponseInputItem::FunctionCallOutput`
+    /// whose JSON content may include multiple question answers for that single tool call.
+    ///
+    /// These are injected with the next user turn so the model receives the tool response even if
+    /// the questions UI was interrupted.
+    pending_request_user_input_answers: HashMap<String, ResponseInputItem>,
     /// Cached `request_user_input` question definitions for each tool call.
     ///
     /// Keyed by `call_id` (the tool call id). Used to render/emit structured
@@ -51,7 +53,7 @@ impl SessionState {
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
             initial_context_seeded: false,
-            pending_user_input_items: HashMap::new(),
+            pending_request_user_input_answers: HashMap::new(),
             request_user_input_calls: HashMap::new(),
         }
     }
@@ -131,30 +133,31 @@ impl SessionState {
         self.mcp_dependency_prompted.clone()
     }
 
-    pub(crate) fn upsert_pending_user_input_item(
+    pub(crate) fn upsert_pending_request_user_input_answer(
         &mut self,
         call_id: String,
         item: ResponseInputItem,
     ) -> Option<ResponseInputItem> {
-        self.pending_user_input_items.insert(call_id, item)
+        self.pending_request_user_input_answers
+            .insert(call_id, item)
     }
 
-    pub(crate) fn remove_pending_user_input_item(
+    pub(crate) fn remove_pending_request_user_input_answer(
         &mut self,
         call_id: &str,
     ) -> Option<ResponseInputItem> {
-        self.pending_user_input_items.remove(call_id)
+        self.pending_request_user_input_answers.remove(call_id)
     }
 
-    pub(crate) fn clear_pending_user_input_items(&mut self) {
-        self.pending_user_input_items.clear();
+    pub(crate) fn clear_pending_request_user_input_answers(&mut self) {
+        self.pending_request_user_input_answers.clear();
     }
 
-    pub(crate) fn take_pending_user_input_items(&mut self) -> Vec<ResponseInputItem> {
-        if self.pending_user_input_items.is_empty() {
+    pub(crate) fn take_pending_request_user_input_answers(&mut self) -> Vec<ResponseInputItem> {
+        if self.pending_request_user_input_answers.is_empty() {
             Vec::with_capacity(0)
         } else {
-            self.pending_user_input_items
+            self.pending_request_user_input_answers
                 .drain()
                 .map(|(_, item)| item)
                 .collect()
@@ -162,8 +165,8 @@ impl SessionState {
     }
 
     #[cfg(test)]
-    pub(crate) fn has_pending_user_input_items(&self) -> bool {
-        !self.pending_user_input_items.is_empty()
+    pub(crate) fn has_pending_request_user_input_answers(&self) -> bool {
+        !self.pending_request_user_input_answers.is_empty()
     }
 
     pub(crate) fn upsert_request_user_input_call(
