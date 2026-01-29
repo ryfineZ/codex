@@ -465,7 +465,7 @@ There are additional item-specific events:
 
 #### agentMessage
 
-- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply. In plan mode, `<proposed_plan>` content is not emitted here; it streams via `item/plan/delta`.
+- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply.
 
 #### plan
 
