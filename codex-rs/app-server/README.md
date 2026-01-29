@@ -443,7 +443,7 @@ Today both notifications carry an empty `items` array even when item events were
 
 - `userMessage` — `{id, content}` where `content` is a list of user inputs (`text`, `image`, or `localImage`).
 - `agentMessage` — `{id, text}` containing the accumulated agent reply.
-- `plan` — `{id, text, agentMessageId}` emitted for plan-mode turns; plan text can stream via `item/plan/delta`. When the final assistant message includes a `<proposed_plan>` block, `text` is the content inside that block, otherwise it falls back to the full assistant message. `agentMessageId` points at the assistant item that produced it.
+- `plan` — `{id, text, agentMessageId}` emitted for plan-mode turns; plan text can stream via `item/plan/delta` (experimental). When the final assistant message includes a `<proposed_plan>` block, `text` is the content inside that block, otherwise it falls back to the full assistant message. `agentMessageId` points at the assistant item that produced it.
 - `reasoning` — `{id, summary, content}` where `summary` holds streamed reasoning summaries (applicable for most OpenAI models) and `content` holds raw reasoning blocks (applicable for e.g. open source models).
 - `commandExecution` — `{id, command, cwd, status, commandActions, aggregatedOutput?, exitCode?, durationMs?}` for sandboxed commands; `status` is `inProgress`, `completed`, `failed`, or `declined`.
 - `fileChange` — `{id, changes, status}` describing proposed edits; `changes` list `{path, kind, diff}` and `status` is `inProgress`, `completed`, `failed`, or `declined`.
@@ -465,11 +465,11 @@ There are additional item-specific events:
 
 #### agentMessage
 
-- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply. In plan mode, the payload also includes `segment` with values `normal`, `proposedPlanStart`, `proposedPlanDelta`, or `proposedPlanEnd` to mark the streamed `<proposed_plan>` region; start/end markers may carry an empty `delta`.
+- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply. In plan mode, the payload also includes `segment` (experimental) with values `normal`, `proposedPlanStart`, `proposedPlanDelta`, or `proposedPlanEnd` to mark the streamed `<proposed_plan>` region; start/end markers may carry an empty `delta`.
 
 #### plan
 
-- `item/plan/delta` — streams proposed plan content for plan items; concatenate `delta` values for the same plan `itemId`. These deltas correspond to the `<proposed_plan>` block.
+- `item/plan/delta` — streams proposed plan content for plan items (experimental); concatenate `delta` values for the same plan `itemId`. These deltas correspond to the `<proposed_plan>` block.
 
 #### reasoning
 

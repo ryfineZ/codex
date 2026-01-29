@@ -2343,6 +2343,7 @@ pub struct AgentMessageDeltaNotification {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
+    /// EXPERIMENTAL - segment markers for proposed plan streaming.
     #[serde(default)]
     pub segment: AgentMessageDeltaSegment,
 }
@@ -2350,6 +2351,7 @@ pub struct AgentMessageDeltaNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+/// EXPERIMENTAL - proposed plan streaming deltas for plan items.
 pub struct PlanDeltaNotification {
     pub thread_id: String,
     pub turn_id: String,
