@@ -2262,6 +2262,7 @@ pub struct TurnPlanUpdatedNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+/// Legacy plan-named todo step used by the todo list update notification.
 pub struct TurnPlanStep {
     pub step: String,
     pub status: TurnPlanStepStatus,
@@ -2270,6 +2271,7 @@ pub struct TurnPlanStep {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+/// Legacy plan-named todo status used by the todo list update notification.
 pub enum TurnPlanStepStatus {
     Pending,
     InProgress,

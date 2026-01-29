@@ -4419,7 +4419,7 @@ async fn todo_update_renders_history_cell() {
     );
     chat.handle_codex_event(Event {
         id: "sub-1".into(),
-        msg: EventMsg::PlanUpdate(update),
+        msg: EventMsg::TodoUpdate(update),
     });
     let cells = drain_insert_history(&mut rx);
     assert!(
