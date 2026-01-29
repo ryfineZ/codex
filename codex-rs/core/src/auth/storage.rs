@@ -421,7 +421,7 @@ mod tests {
 
         storage.save(&auth_dot_json)?;
         let loaded = storage.load()?;
-        assert_eq!(Some(auth_dot_json.clone()), loaded);
+        assert_eq!(Some(auth_dot_json), loaded);
 
         let removed = storage.delete()?;
         assert!(removed);
