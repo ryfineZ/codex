@@ -1,11 +1,8 @@
 //! Session-wide mutable state.
 
-use std::collections::HashMap;
 use std::collections::HashSet;
 
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::request_user_input::RequestUserInputQuestion;
 
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
@@ -26,20 +23,6 @@ pub(crate) struct SessionState {
     /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
     /// timestamp when resuming a session. Remove this once SQLite is in place.
     pub(crate) initial_context_seeded: bool,
-    /// Buffered `function_call_output` payloads for interrupted `request_user_input` tool calls.
-    ///
-    /// Keyed by `call_id` (the tool call id). The value is a `ResponseInputItem::FunctionCallOutput`
-    /// whose JSON content may include multiple question answers for that single tool call.
-    ///
-    /// These are injected with the next user turn so the model receives the tool response even if
-    /// the questions UI was interrupted.
-    pending_request_user_input_answers: HashMap<String, ResponseInputItem>,
-    /// Cached `request_user_input` question definitions for each tool call.
-    ///
-    /// Keyed by `call_id` (the tool call id). Used to render/emit structured
-    /// `RequestUserInputResult` events when a matching `function_call_output` arrives, including
-    /// interrupted partial answers.
-    request_user_input_calls: HashMap<String, Vec<RequestUserInputQuestion>>,
 }
 
 impl SessionState {
@@ -53,8 +36,6 @@ impl SessionState {
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
             initial_context_seeded: false,
-            pending_request_user_input_answers: HashMap::new(),
-            request_user_input_calls: HashMap::new(),
         }
     }
 
@@ -131,61 +112,6 @@ impl SessionState {
 
     pub(crate) fn mcp_dependency_prompted(&self) -> HashSet<String> {
         self.mcp_dependency_prompted.clone()
-    }
-
-    pub(crate) fn upsert_pending_request_user_input_answer(
-        &mut self,
-        call_id: String,
-        item: ResponseInputItem,
-    ) -> Option<ResponseInputItem> {
-        self.pending_request_user_input_answers
-            .insert(call_id, item)
-    }
-
-    pub(crate) fn remove_pending_request_user_input_answer(
-        &mut self,
-        call_id: &str,
-    ) -> Option<ResponseInputItem> {
-        self.pending_request_user_input_answers.remove(call_id)
-    }
-
-    pub(crate) fn clear_pending_request_user_input_answers(&mut self) {
-        self.pending_request_user_input_answers.clear();
-    }
-
-    pub(crate) fn take_pending_request_user_input_answers(&mut self) -> Vec<ResponseInputItem> {
-        if self.pending_request_user_input_answers.is_empty() {
-            Vec::with_capacity(0)
-        } else {
-            self.pending_request_user_input_answers
-                .drain()
-                .map(|(_, item)| item)
-                .collect()
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn has_pending_request_user_input_answers(&self) -> bool {
-        !self.pending_request_user_input_answers.is_empty()
-    }
-
-    pub(crate) fn upsert_request_user_input_call(
-        &mut self,
-        call_id: String,
-        questions: Vec<RequestUserInputQuestion>,
-    ) {
-        self.request_user_input_calls.insert(call_id, questions);
-    }
-
-    pub(crate) fn request_user_input_questions(
-        &self,
-        call_id: &str,
-    ) -> Option<Vec<RequestUserInputQuestion>> {
-        self.request_user_input_calls.get(call_id).cloned()
-    }
-
-    pub(crate) fn has_request_user_input_call(&self, call_id: &str) -> bool {
-        self.request_user_input_calls.contains_key(call_id)
     }
 }
 
