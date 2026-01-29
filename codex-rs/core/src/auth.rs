@@ -416,6 +416,7 @@ fn load_auth(
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<Option<CodexAuth>> {
+    // API key via env var takes precedence over any other auth method.
     if enable_codex_api_key_env && let Some(api_key) = read_codex_api_key_from_env() {
         let client = crate::default_client::create_client();
         return Ok(Some(CodexAuth::from_api_key_with_client(
@@ -424,6 +425,8 @@ fn load_auth(
         )));
     }
 
+    // External ChatGPT auth tokens live in the in-memory (ephemeral) store. Always check this
+    // first so external auth takes precedence over any persisted credentials.
     let ephemeral_storage = create_auth_storage(
         codex_home.to_path_buf(),
         AuthCredentialsStoreMode::Ephemeral,
@@ -439,10 +442,12 @@ fn load_auth(
         return Ok(Some(auth));
     }
 
+    // If the caller explicitly requested ephemeral auth, there is no persisted fallback.
     if auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
         return Ok(None);
     }
 
+    // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
     let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
     let auth_dot_json = match storage.load()? {
         Some(auth) => auth,
