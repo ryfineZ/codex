@@ -100,6 +100,7 @@ When you present the official plan, wrap it in a `<proposed_plan>` block so the 
 2) Start the plan content on the next line (no text on the same line as the tag).
 3) The closing tag must be on its own line.
 4) Use Markdown inside the block.
+5) Keep the tags exactly as `<proposed_plan>` and `</proposed_plan>` (do not translate or rename them), even if the plan content is in another language.
 
 Example:
 

@@ -1733,6 +1733,29 @@ pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlanUpdateCell {
     PlanUpdateCell { explanation, plan }
 }
 
+pub(crate) fn new_proposed_plan(plan_markdown: String) -> ProposedPlanCell {
+    ProposedPlanCell { plan_markdown }
+}
+
+#[derive(Debug)]
+pub(crate) struct ProposedPlanCell {
+    plan_markdown: String,
+}
+
+impl HistoryCell for ProposedPlanCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = vec![vec!["• ".dim(), "Proposed Plan".bold()].into()];
+        let wrap_width = width.saturating_sub(4).max(1) as usize;
+        let mut body: Vec<Line<'static>> = Vec::new();
+        append_markdown(&self.plan_markdown, Some(wrap_width), &mut body);
+        if body.is_empty() {
+            body.push(Line::from("(empty)".dim().italic()));
+        }
+        lines.extend(prefix_lines(body, "  ".into(), "  ".into()));
+        lines
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PlanUpdateCell {
     explanation: Option<String>,

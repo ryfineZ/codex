@@ -23,7 +23,9 @@ use codex_core::config::ConstraintError;
 use codex_core::config_loader::RequirementSource;
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
+use codex_core::protocol::AgentMessageContentDeltaEvent;
 use codex_core::protocol::AgentMessageDeltaEvent;
+use codex_core::protocol::AgentMessageDeltaSegment;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
@@ -834,6 +836,9 @@ async fn make_chatwidget_manual(
         needs_final_message_separator: false,
         had_work_activity: false,
         saw_plan_update_this_turn: false,
+        saw_proposed_plan_this_turn: false,
+        proposed_plan_buffer: String::new(),
+        proposed_plan_active: false,
         last_separator_elapsed_secs: None,
         last_rendered_width: std::cell::Cell::new(None),
         feedback: codex_feedback::CodexFeedback::new(),
@@ -1270,7 +1275,7 @@ async fn plan_implementation_popup_skips_when_messages_queued() {
 }
 
 #[tokio::test]
-async fn plan_implementation_popup_shows_on_plan_update_without_message() {
+async fn plan_implementation_popup_skips_without_proposed_plan() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
     let plan_mask =
@@ -1290,8 +1295,48 @@ async fn plan_implementation_popup_shows_on_plan_update_without_message() {
 
     let popup = render_bottom_popup(&chat, 80);
     assert!(
+        !popup.contains(PLAN_IMPLEMENTATION_TITLE),
+        "expected no plan popup without proposed plan output, got {popup:?}"
+    );
+}
+
+#[tokio::test]
+async fn plan_implementation_popup_shows_after_proposed_plan_output() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let plan_mask =
+        collaboration_modes::mask_for_kind(chat.models_manager.as_ref(), ModeKind::Plan)
+            .expect("expected plan collaboration mask");
+    chat.set_collaboration_mask(plan_mask);
+
+    chat.on_task_started();
+    chat.on_agent_message_content_delta(AgentMessageContentDeltaEvent {
+        thread_id: String::new(),
+        turn_id: String::new(),
+        item_id: "msg-1".to_string(),
+        delta: String::new(),
+        segment: AgentMessageDeltaSegment::ProposedPlanStart,
+    });
+    chat.on_agent_message_content_delta(AgentMessageContentDeltaEvent {
+        thread_id: String::new(),
+        turn_id: String::new(),
+        item_id: "msg-1".to_string(),
+        delta: "- Step 1\n- Step 2\n".to_string(),
+        segment: AgentMessageDeltaSegment::ProposedPlanDelta,
+    });
+    chat.on_agent_message_content_delta(AgentMessageContentDeltaEvent {
+        thread_id: String::new(),
+        turn_id: String::new(),
+        item_id: "msg-1".to_string(),
+        delta: String::new(),
+        segment: AgentMessageDeltaSegment::ProposedPlanEnd,
+    });
+    chat.on_task_complete(None, false);
+
+    let popup = render_bottom_popup(&chat, 80);
+    assert!(
         popup.contains(PLAN_IMPLEMENTATION_TITLE),
-        "expected plan popup after plan update, got {popup:?}"
+        "expected plan popup after proposed plan output, got {popup:?}"
     );
 }
 

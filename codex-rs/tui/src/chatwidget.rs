@@ -41,7 +41,9 @@ use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
+use codex_core::protocol::AgentMessageContentDeltaEvent;
 use codex_core::protocol::AgentMessageDeltaEvent;
+use codex_core::protocol::AgentMessageDeltaSegment;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
@@ -521,6 +523,12 @@ pub(crate) struct ChatWidget {
     had_work_activity: bool,
     // Whether the current turn emitted a plan update.
     saw_plan_update_this_turn: bool,
+    // Whether the current turn emitted a proposed plan block.
+    saw_proposed_plan_this_turn: bool,
+    // Incremental buffer for `<proposed_plan>` content while streaming.
+    proposed_plan_buffer: String,
+    // True while currently inside a `<proposed_plan>` block.
+    proposed_plan_active: bool,
     // Status-indicator elapsed seconds captured at the last emitted final-message separator.
     //
     // This lets the separator show per-chunk work time (since the previous separator) rather than
@@ -691,6 +699,27 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
     }
 }
 
+fn strip_proposed_plan_blocks(text: &str) -> String {
+    const OPEN_TAG: &str = "<proposed_plan>";
+    const CLOSE_TAG: &str = "</proposed_plan>";
+
+    let mut out = String::new();
+    let mut rest = text;
+    loop {
+        let Some(open) = rest.find(OPEN_TAG) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + OPEN_TAG.len()..];
+        let Some(close) = after_open.find(CLOSE_TAG) else {
+            break;
+        };
+        rest = &after_open[close + CLOSE_TAG.len()..];
+    }
+    out
+}
+
 impl ChatWidget {
     /// Synchronize the bottom-pane "task running" indicator with the current lifecycles.
     ///
@@ -852,9 +881,14 @@ impl ChatWidget {
     }
 
     fn on_agent_message(&mut self, message: String) {
+        let message = if self.active_mode_kind() == ModeKind::Plan {
+            strip_proposed_plan_blocks(&message)
+        } else {
+            message
+        };
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
-        if self.stream_controller.is_none() {
+        if self.stream_controller.is_none() && !message.is_empty() {
             self.handle_streaming_delta(message);
         }
         self.flush_answer_stream_with_separator();
@@ -864,6 +898,40 @@ impl ChatWidget {
 
     fn on_agent_message_delta(&mut self, delta: String) {
         self.handle_streaming_delta(delta);
+    }
+
+    fn on_agent_message_content_delta(&mut self, event: AgentMessageContentDeltaEvent) {
+        if self.active_mode_kind() != ModeKind::Plan {
+            return;
+        }
+        match event.segment {
+            AgentMessageDeltaSegment::Normal => {}
+            AgentMessageDeltaSegment::ProposedPlanStart => {
+                self.proposed_plan_active = true;
+                self.proposed_plan_buffer.clear();
+            }
+            AgentMessageDeltaSegment::ProposedPlanDelta => {
+                if !self.proposed_plan_active {
+                    self.proposed_plan_active = true;
+                    self.proposed_plan_buffer.clear();
+                }
+                self.proposed_plan_buffer.push_str(&event.delta);
+            }
+            AgentMessageDeltaSegment::ProposedPlanEnd => {
+                self.proposed_plan_active = false;
+                self.emit_proposed_plan_history_if_any();
+            }
+        }
+    }
+
+    fn emit_proposed_plan_history_if_any(&mut self) {
+        let text = self.proposed_plan_buffer.trim().to_string();
+        self.proposed_plan_buffer.clear();
+        if text.is_empty() {
+            return;
+        }
+        self.saw_proposed_plan_this_turn = true;
+        self.add_to_history(history_cell::new_proposed_plan(text));
     }
 
     fn on_agent_reasoning_delta(&mut self, delta: String) {
@@ -912,6 +980,9 @@ impl ChatWidget {
     fn on_task_started(&mut self) {
         self.agent_turn_running = true;
         self.saw_plan_update_this_turn = false;
+        self.saw_proposed_plan_this_turn = false;
+        self.proposed_plan_buffer.clear();
+        self.proposed_plan_active = false;
         self.bottom_pane.clear_quit_shortcut_hint();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
@@ -925,6 +996,10 @@ impl ChatWidget {
     }
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
+        if self.proposed_plan_active {
+            self.proposed_plan_active = false;
+            self.emit_proposed_plan_history_if_any();
+        }
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
         self.flush_unified_exec_wait_streak();
@@ -939,7 +1014,7 @@ impl ChatWidget {
         self.request_redraw();
 
         if !from_replay && self.queued_user_messages.is_empty() {
-            self.maybe_prompt_plan_implementation(last_agent_message.as_deref());
+            self.maybe_prompt_plan_implementation();
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
@@ -951,7 +1026,7 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
-    fn maybe_prompt_plan_implementation(&mut self, last_agent_message: Option<&str>) {
+    fn maybe_prompt_plan_implementation(&mut self) {
         if !self.collaboration_modes_enabled() {
             return;
         }
@@ -961,8 +1036,7 @@ impl ChatWidget {
         if self.active_mode_kind() != ModeKind::Plan {
             return;
         }
-        let has_message = last_agent_message.is_some_and(|message| !message.trim().is_empty());
-        if !has_message && !self.saw_plan_update_this_turn {
+        if !self.saw_proposed_plan_this_turn {
             return;
         }
         if !self.bottom_pane.no_modal_or_popup_active() {
@@ -2094,6 +2168,9 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             saw_plan_update_this_turn: false,
+            saw_proposed_plan_this_turn: false,
+            proposed_plan_buffer: String::new(),
+            proposed_plan_active: false,
             last_separator_elapsed_secs: None,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
@@ -2222,6 +2299,9 @@ impl ChatWidget {
             thread_id: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
+            saw_proposed_plan_this_turn: false,
+            proposed_plan_buffer: String::new(),
+            proposed_plan_active: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
@@ -2359,6 +2439,9 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             saw_plan_update_this_turn: false,
+            saw_proposed_plan_this_turn: false,
+            proposed_plan_buffer: String::new(),
+            proposed_plan_active: false,
             last_separator_elapsed_secs: None,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
@@ -3066,6 +3149,7 @@ impl ChatWidget {
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
             }
+            EventMsg::AgentMessageContentDelta(event) => self.on_agent_message_content_delta(event),
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })
             | EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
                 delta,
@@ -3171,7 +3255,6 @@ impl ChatWidget {
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
             | EventMsg::ItemCompleted(_)
-            | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::DynamicToolCallRequest(_) => {}
