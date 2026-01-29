@@ -1302,12 +1302,11 @@ async fn handle_turn_complete(
 ) {
     let turn_summary = find_and_remove_turn_summary(conversation_id, turn_summary_store).await;
 
-    let last_error = turn_summary.last_error;
-
-    let (status, error) = match last_error {
+    let (status, error) = match turn_summary.last_error {
         Some(error) => (TurnStatus::Failed, Some(error)),
         None => (TurnStatus::Completed, None),
     };
+
     emit_turn_completed_with_status(conversation_id, event_turn_id, status, error, outgoing).await;
 }
 
