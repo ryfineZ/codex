@@ -104,13 +104,11 @@ When you present the official plan, wrap it in a `<proposed_plan>` block so the 
 
 Example:
 
-```markdown
 <proposed_plan>
 # Plan title
 - Step 1
 - Step 2
 </proposed_plan>
-```
 
 The final plan must be plan-only and include:
 
