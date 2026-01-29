@@ -1502,8 +1502,6 @@ async fn record_plan_output(
         return None;
     }
 
-    // Always retain the full assistant message as a fallback for the plan item.
-    summary.last_agent_message_text = Some(message_text);
     if summary.proposed_plan_active
         && summary.last_proposed_plan.is_none()
         && !summary.proposed_plan_buffer.is_empty()
@@ -1681,7 +1679,6 @@ async fn handle_turn_complete(
     let plan_mode = turn_summary.collaboration_mode_kind == Some(ModeKind::Plan);
     let plan_item_started = turn_summary.plan_item_started;
     let plan_item_completed = turn_summary.plan_item_completed;
-    let last_agent_message_text = turn_summary.last_agent_message_text;
     let last_error = turn_summary.last_error;
 
     let (status, error) = match last_error {
@@ -1689,12 +1686,10 @@ async fn handle_turn_complete(
         None => (TurnStatus::Completed, None),
     };
 
-    let plan_text = proposed_plan_text.or(last_agent_message_text);
-
     if matches!(status, TurnStatus::Completed)
         && plan_mode
         && !plan_item_completed
-        && let Some(text) = plan_text
+        && let Some(text) = proposed_plan_text
     {
         if plan_item_started {
             let plan_id = plan_item_id(&event_turn_id);
@@ -2475,7 +2470,7 @@ mod tests {
                 conversation_id,
                 TurnSummary {
                     collaboration_mode_kind: Some(ModeKind::Plan),
-                    last_agent_message_text: Some(plan_text.clone()),
+                    last_proposed_plan: Some(plan_text.clone()),
                     ..Default::default()
                 },
             );

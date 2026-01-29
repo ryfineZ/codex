@@ -219,4 +219,29 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn closes_unterminated_plan_block_on_finish() {
+        let mut parser = ProposedPlanParser::new();
+        let mut segments = parser.parse("<proposed_plan>\n- step 1\n");
+        segments.extend(parser.finish());
+
+        assert_eq!(
+            segments,
+            vec![
+                ParsedAgentDelta {
+                    segment: AgentMessageDeltaSegment::ProposedPlanStart,
+                    delta: String::new(),
+                },
+                ParsedAgentDelta {
+                    segment: AgentMessageDeltaSegment::ProposedPlanDelta,
+                    delta: "- step 1\n".to_string(),
+                },
+                ParsedAgentDelta {
+                    segment: AgentMessageDeltaSegment::ProposedPlanEnd,
+                    delta: String::new(),
+                },
+            ]
+        );
+    }
 }

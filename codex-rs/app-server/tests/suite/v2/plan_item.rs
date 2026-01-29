@@ -53,7 +53,7 @@ async fn plan_mode_uses_proposed_plan_block_for_plan_item() -> Result<()> {
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let turn = start_plan_mode_turn(&mut mcp).await?;
+    let _turn = start_plan_mode_turn(&mut mcp).await?;
     let (_, completed_items, plan_deltas, turn_completed) =
         collect_turn_notifications(&mut mcp).await?;
 
@@ -94,7 +94,7 @@ async fn plan_mode_uses_proposed_plan_block_for_plan_item() -> Result<()> {
 }
 
 #[tokio::test]
-async fn plan_mode_without_proposed_plan_falls_back_to_agent_message() -> Result<()> {
+async fn plan_mode_without_proposed_plan_does_not_emit_plan_item() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let responses = vec![responses::sse(vec![
@@ -113,10 +113,6 @@ async fn plan_mode_without_proposed_plan_falls_back_to_agent_message() -> Result
     let turn = start_plan_mode_turn(&mut mcp).await?;
     let (_, completed_items, plan_deltas, _) = collect_turn_notifications(&mut mcp).await?;
 
-    let expected_plan = ThreadItem::Plan {
-        id: format!("{}-plan", turn.id),
-        text: "Done".to_string(),
-    };
     let plan_items = completed_items
         .iter()
         .filter_map(|item| match item {
@@ -124,7 +120,7 @@ async fn plan_mode_without_proposed_plan_falls_back_to_agent_message() -> Result
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(plan_items, vec![expected_plan]);
+    assert!(plan_items.is_empty());
     assert!(plan_deltas.is_empty());
 
     Ok(())

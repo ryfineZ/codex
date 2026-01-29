@@ -226,8 +226,6 @@ pub(crate) struct TurnSummary {
     pub(crate) file_change_started: HashSet<String>,
     pub(crate) last_error: Option<TurnError>,
     pub(crate) collaboration_mode_kind: Option<ModeKind>,
-    /// Last completed assistant message text observed for this turn.
-    pub(crate) last_agent_message_text: Option<String>,
     /// Whether we are currently inside a `<proposed_plan>` section.
     pub(crate) proposed_plan_active: bool,
     /// Accumulated proposed plan text for the current section.
