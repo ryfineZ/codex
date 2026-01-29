@@ -2361,7 +2361,12 @@ mod tests {
 
         let plan_text = "Final plan text".to_string();
         let agent_message_id = "msg-plan".to_string();
-        let expected_item = ThreadItem::Plan {
+        let expected_started_item = ThreadItem::Plan {
+            id: format!("{event_turn_id}-plan"),
+            text: String::new(),
+            agent_message_id: agent_message_id.clone(),
+        };
+        let expected_completed_item = ThreadItem::Plan {
             id: format!("{event_turn_id}-plan"),
             text: plan_text.clone(),
             agent_message_id: agent_message_id.clone(),
@@ -2394,7 +2399,7 @@ mod tests {
             .ok_or_else(|| anyhow!("should send plan started"))?;
         match started {
             OutgoingMessage::AppServerNotification(ServerNotification::ItemStarted(n)) => {
-                assert_eq!(n.item, expected_item.clone());
+                assert_eq!(n.item, expected_started_item);
             }
             other => bail!("unexpected message: {other:?}"),
         }
@@ -2405,7 +2410,7 @@ mod tests {
             .ok_or_else(|| anyhow!("should send plan completed"))?;
         match completed {
             OutgoingMessage::AppServerNotification(ServerNotification::ItemCompleted(n)) => {
-                assert_eq!(n.item, expected_item);
+                assert_eq!(n.item, expected_completed_item);
             }
             other => bail!("unexpected message: {other:?}"),
         }
