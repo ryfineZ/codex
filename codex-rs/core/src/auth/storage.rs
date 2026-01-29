@@ -265,6 +265,7 @@ impl AuthStorageBackend for AutoAuthStorage {
     }
 }
 
+// A global in-memory store for mapping codex_home -> AuthDotJson.
 static EPHEMERAL_AUTH_STORE: Lazy<Mutex<HashMap<String, AuthDotJson>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
