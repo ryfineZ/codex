@@ -28,6 +28,7 @@ impl GitSha {
 pub enum AuthMode {
     ApiKey,
     ChatGPT,
+    /// [UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.
     #[serde(rename = "chatgptAuthTokens")]
     #[ts(rename = "chatgptAuthTokens")]
     #[strum(serialize = "chatgptAuthTokens")]

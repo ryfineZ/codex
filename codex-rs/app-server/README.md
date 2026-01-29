@@ -592,7 +592,7 @@ Codex supports three authentication modes. The current mode is surfaced in `acco
 
 - **API key (`apiKey`)**: Caller supplies an OpenAI API key via `account/login/start` with `type: "apiKey"`. The API key is saved and used for API requests.
 - **ChatGPT managed (`chatgpt`)** (recommended): Codex owns the ChatGPT OAuth flow and refresh tokens. Start via `account/login/start` with `type: "chatgpt"`; Codex persists tokens to disk and refreshes them automatically.
-- **ChatGPT external (`chatgptAuthTokens`)**: The client supplies existing ChatGPT auth tokens (`idToken` and `accessToken`) via `account/login/start` with `type: "chatgptAuthTokens"`. Codex uses the access token for API calls, parses the ID token for account metadata, stores the tokens only in memory, and requests refresh via `account/chatgptAuthTokens/refresh` when needed. This mode is useful when using Codex as an embedded agent within an application that already manages ChatGPT auth tokens.
+- **ChatGPT external (`chatgptAuthTokens`)** (for OpenAI internal use only): The client supplies existing ChatGPT auth tokens (`idToken` and `accessToken`) via `account/login/start` with `type: "chatgptAuthTokens"`. Codex uses the access token for API calls, parses the ID token for account metadata, stores the tokens only in memory, and requests refresh via `account/chatgptAuthTokens/refresh` when needed. This mode is useful when using Codex as an embedded agent within an application that already manages ChatGPT auth tokens. The access token must contain the same scopes that Codex-managed ChatGPT auth tokens have.
 
 ### API Overview
 
