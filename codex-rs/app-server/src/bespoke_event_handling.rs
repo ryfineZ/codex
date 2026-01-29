@@ -801,6 +801,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                     let mut map = turn_summary_store.lock().await;
                     let summary = map.entry(conversation_id).or_default();
                     if is_plan_mode(summary) {
+                        // In plan mode, delay agent message start until we see a Normal segment.
+                        // This avoids creating empty/plan-only agent message items when the model
+                        // streams only `<proposed_plan>` content.
                         summary.pending_agent_message_starts.insert(item_id);
                         true
                     } else {
@@ -1495,7 +1498,6 @@ async fn record_plan_output(
     turn_summary_store: &TurnSummaryStore,
 ) -> Option<AgentMessageEmission> {
     let message_text = agent_message_text(agent_message);
-    let stripped_text = strip_proposed_plan_blocks(&message_text);
     let mut map = turn_summary_store.lock().await;
     let summary = map.entry(conversation_id).or_default();
     if !is_plan_mode(summary) {
@@ -1516,7 +1518,7 @@ async fn record_plan_output(
         .remove(&item_id)
         .unwrap_or_default();
     let text = if accumulated_text.is_empty() {
-        stripped_text
+        message_text
     } else {
         accumulated_text
     };
@@ -1536,26 +1538,6 @@ async fn record_plan_output(
         emit_completed,
         text,
     })
-}
-
-fn strip_proposed_plan_blocks(text: &str) -> String {
-    const OPEN_TAG: &str = "<proposed_plan>";
-    const CLOSE_TAG: &str = "</proposed_plan>";
-
-    let mut output = String::new();
-    let mut remaining = text;
-    while let Some(open_idx) = remaining.find(OPEN_TAG) {
-        output.push_str(&remaining[..open_idx]);
-        let after_open = &remaining[open_idx + OPEN_TAG.len()..];
-        if let Some(close_rel_idx) = after_open.find(CLOSE_TAG) {
-            remaining = &after_open[close_rel_idx + CLOSE_TAG.len()..];
-        } else {
-            remaining = "";
-            break;
-        }
-    }
-    output.push_str(remaining);
-    output
 }
 
 fn plan_item_id(event_turn_id: &str) -> String {

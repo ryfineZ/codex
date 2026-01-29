@@ -699,27 +699,6 @@ fn remap_placeholders_for_message(message: UserMessage, next_label: &mut usize) 
     }
 }
 
-fn strip_proposed_plan_blocks(text: &str) -> String {
-    const OPEN_TAG: &str = "<proposed_plan>";
-    const CLOSE_TAG: &str = "</proposed_plan>";
-
-    let mut out = String::new();
-    let mut rest = text;
-    loop {
-        let Some(open) = rest.find(OPEN_TAG) else {
-            out.push_str(rest);
-            break;
-        };
-        out.push_str(&rest[..open]);
-        let after_open = &rest[open + OPEN_TAG.len()..];
-        let Some(close) = after_open.find(CLOSE_TAG) else {
-            break;
-        };
-        rest = &after_open[close + CLOSE_TAG.len()..];
-    }
-    out
-}
-
 impl ChatWidget {
     /// Synchronize the bottom-pane "task running" indicator with the current lifecycles.
     ///
@@ -881,11 +860,6 @@ impl ChatWidget {
     }
 
     fn on_agent_message(&mut self, message: String) {
-        let message = if self.active_mode_kind() == ModeKind::Plan {
-            strip_proposed_plan_blocks(&message)
-        } else {
-            message
-        };
         // If we have a stream_controller, then the final agent message is redundant and will be a
         // duplicate of what has already been streamed.
         if self.stream_controller.is_none() && !message.is_empty() {

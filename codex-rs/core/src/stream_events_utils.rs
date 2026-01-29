@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::items::TurnItem;
 use tokio_util::sync::CancellationToken;
 
@@ -10,6 +11,7 @@ use crate::error::CodexErr;
 use crate::error::Result;
 use crate::function_tool::FunctionCallError;
 use crate::parse_turn_item;
+use crate::proposed_plan_parser::strip_proposed_plan_blocks;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolRouter;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -46,6 +48,7 @@ pub(crate) async fn handle_output_item_done(
     previously_active_item: Option<TurnItem>,
 ) -> Result<OutputItemResult> {
     let mut output = OutputItemResult::default();
+    let plan_mode = ctx.turn_context.collaboration_mode_kind == ModeKind::Plan;
 
     match ToolRouter::build_tool_call(ctx.sess.as_ref(), item.clone()).await {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
@@ -69,7 +72,7 @@ pub(crate) async fn handle_output_item_done(
         }
         // No tool call: convert messages/reasoning into turn items and mark them as complete.
         Ok(None) => {
-            if let Some(turn_item) = handle_non_tool_response_item(&item).await {
+            if let Some(turn_item) = handle_non_tool_response_item(&item, plan_mode).await {
                 if previously_active_item.is_none() {
                     ctx.sess
                         .emit_turn_item_started(&ctx.turn_context, &turn_item)
@@ -84,7 +87,7 @@ pub(crate) async fn handle_output_item_done(
             ctx.sess
                 .record_conversation_items(&ctx.turn_context, std::slice::from_ref(&item))
                 .await;
-            let last_agent_message = last_assistant_message_from_item(&item);
+            let last_agent_message = last_assistant_message_from_item(&item, plan_mode);
 
             output.last_agent_message = last_agent_message;
         }
@@ -150,13 +153,25 @@ pub(crate) async fn handle_output_item_done(
     Ok(output)
 }
 
-pub(crate) async fn handle_non_tool_response_item(item: &ResponseItem) -> Option<TurnItem> {
+pub(crate) async fn handle_non_tool_response_item(
+    item: &ResponseItem,
+    plan_mode: bool,
+) -> Option<TurnItem> {
     debug!(?item, "Output item");
 
     match item {
         ResponseItem::Message { .. }
         | ResponseItem::Reasoning { .. }
-        | ResponseItem::WebSearchCall { .. } => parse_turn_item(item),
+        | ResponseItem::WebSearchCall { .. } => {
+            let mut turn_item = parse_turn_item(item)?;
+            if plan_mode && let TurnItem::AgentMessage(agent_message) = &mut turn_item {
+                for content in &mut agent_message.content {
+                    let codex_protocol::items::AgentMessageContent::Text { text } = content;
+                    *text = strip_proposed_plan_blocks(text);
+                }
+            }
+            Some(turn_item)
+        }
         ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. } => {
             debug!("unexpected tool output from stream");
             None
@@ -165,13 +180,23 @@ pub(crate) async fn handle_non_tool_response_item(item: &ResponseItem) -> Option
     }
 }
 
-pub(crate) fn last_assistant_message_from_item(item: &ResponseItem) -> Option<String> {
+pub(crate) fn last_assistant_message_from_item(
+    item: &ResponseItem,
+    plan_mode: bool,
+) -> Option<String> {
     if let ResponseItem::Message { role, content, .. } = item
         && role == "assistant"
     {
-        return content.iter().rev().find_map(|ci| match ci {
+        let text = content.iter().rev().find_map(|ci| match ci {
             codex_protocol::models::ContentItem::OutputText { text } => Some(text.clone()),
             _ => None,
+        });
+        return text.map(|text| {
+            if plan_mode {
+                strip_proposed_plan_blocks(&text)
+            } else {
+                text
+            }
         });
     }
     None

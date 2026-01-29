@@ -157,10 +157,22 @@ fn push_segment(
     segments.push(ParsedAgentDelta { segment, delta });
 }
 
+pub(crate) fn strip_proposed_plan_blocks(text: &str) -> String {
+    let mut parser = ProposedPlanParser::new();
+    let mut out = String::new();
+    for segment in parser.parse(text).into_iter().chain(parser.finish()) {
+        if matches!(segment.segment, AgentMessageDeltaSegment::Normal) {
+            out.push_str(&segment.delta);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::ParsedAgentDelta;
     use super::ProposedPlanParser;
+    use super::strip_proposed_plan_blocks;
     use codex_protocol::protocol::AgentMessageDeltaSegment;
     use pretty_assertions::assert_eq;
 
@@ -243,5 +255,11 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn strips_proposed_plan_blocks_from_text() {
+        let text = "before\n<proposed_plan>\n- step\n</proposed_plan>\nafter";
+        assert_eq!(strip_proposed_plan_blocks(text), "before\nafter");
     }
 }

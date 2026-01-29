@@ -3757,7 +3757,7 @@ async fn try_run_sampling_request(
                 needs_follow_up |= output_result.needs_follow_up;
             }
             ResponseEvent::OutputItemAdded(item) => {
-                if let Some(turn_item) = handle_non_tool_response_item(&item).await {
+                if let Some(turn_item) = handle_non_tool_response_item(&item, plan_mode).await {
                     sess.emit_turn_item_started(&turn_context, &turn_item).await;
                     active_item = Some(turn_item);
                 }
