@@ -230,6 +230,16 @@ pub(crate) struct TurnSummary {
     pub(crate) last_agent_message_id: Option<String>,
     /// Last completed assistant message text observed for this turn.
     pub(crate) last_agent_message_text: Option<String>,
+    /// Whether we are currently inside a `<proposed_plan>` section.
+    pub(crate) proposed_plan_active: bool,
+    /// Accumulated proposed plan text for the current section.
+    pub(crate) proposed_plan_buffer: String,
+    /// Most recently completed proposed plan text, if any.
+    pub(crate) last_proposed_plan: Option<String>,
+    /// Whether a plan item has been started for this turn.
+    pub(crate) plan_item_started: bool,
+    /// Whether a plan item has been completed for this turn.
+    pub(crate) plan_item_completed: bool,
 }
 
 pub(crate) type TurnSummaryStore = Arc<Mutex<HashMap<ThreadId, TurnSummary>>>;

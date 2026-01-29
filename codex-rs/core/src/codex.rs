@@ -124,7 +124,9 @@ use crate::mentions::collect_explicit_app_paths;
 use crate::mentions::collect_tool_mentions_from_messages;
 use crate::model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
 use crate::project_doc::get_user_instructions;
+use crate::proposed_plan_parser::ProposedPlanParser;
 use crate::protocol::AgentMessageContentDeltaEvent;
+use crate::protocol::AgentMessageDeltaSegment;
 use crate::protocol::AgentReasoningSectionBreakEvent;
 use crate::protocol::ApplyPatchApprovalRequestEvent;
 use crate::protocol::AskForApproval;
@@ -3671,6 +3673,8 @@ async fn try_run_sampling_request(
     let mut last_agent_message: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
     let mut should_emit_turn_diff = false;
+    let plan_mode = turn_context.collaboration_mode_kind == ModeKind::Plan;
+    let mut proposed_plan_parser = plan_mode.then(ProposedPlanParser::new);
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -3709,6 +3713,31 @@ async fn try_run_sampling_request(
             ResponseEvent::Created => {}
             ResponseEvent::OutputItemDone(item) => {
                 let previously_active_item = active_item.take();
+                if let Some(parser) = proposed_plan_parser.as_mut()
+                    && let Some(active) = previously_active_item.as_ref()
+                    && matches!(active, TurnItem::AgentMessage(_))
+                {
+                    let segments = parser.finish();
+                    if !segments.is_empty() {
+                        let thread_id = sess.conversation_id.to_string();
+                        let turn_id = turn_context.sub_id.clone();
+                        let item_id = active.id();
+                        for segment in segments {
+                            let event = AgentMessageContentDeltaEvent {
+                                thread_id: thread_id.clone(),
+                                turn_id: turn_id.clone(),
+                                item_id: item_id.clone(),
+                                delta: segment.delta,
+                                segment: segment.segment,
+                            };
+                            sess.send_event(
+                                &turn_context,
+                                EventMsg::AgentMessageContentDelta(event),
+                            )
+                            .await;
+                        }
+                    }
+                }
                 let mut ctx = HandleOutputCtx {
                     sess: sess.clone(),
                     turn_context: turn_context.clone(),
@@ -3753,6 +3782,31 @@ async fn try_run_sampling_request(
                 response_id: _,
                 token_usage,
             } => {
+                if let Some(parser) = proposed_plan_parser.as_mut()
+                    && let Some(active) = active_item.as_ref()
+                    && matches!(active, TurnItem::AgentMessage(_))
+                {
+                    let segments = parser.finish();
+                    if !segments.is_empty() {
+                        let thread_id = sess.conversation_id.to_string();
+                        let turn_id = turn_context.sub_id.clone();
+                        let item_id = active.id();
+                        for segment in segments {
+                            let event = AgentMessageContentDeltaEvent {
+                                thread_id: thread_id.clone(),
+                                turn_id: turn_id.clone(),
+                                item_id: item_id.clone(),
+                                delta: segment.delta,
+                                segment: segment.segment,
+                            };
+                            sess.send_event(
+                                &turn_context,
+                                EventMsg::AgentMessageContentDelta(event),
+                            )
+                            .await;
+                        }
+                    }
+                }
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 should_emit_turn_diff = true;
@@ -3768,14 +3822,39 @@ async fn try_run_sampling_request(
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
                 if let Some(active) = active_item.as_ref() {
-                    let event = AgentMessageContentDeltaEvent {
-                        thread_id: sess.conversation_id.to_string(),
-                        turn_id: turn_context.sub_id.clone(),
-                        item_id: active.id(),
-                        delta: delta.clone(),
-                    };
-                    sess.send_event(&turn_context, EventMsg::AgentMessageContentDelta(event))
-                        .await;
+                    let thread_id = sess.conversation_id.to_string();
+                    let turn_id = turn_context.sub_id.clone();
+                    let item_id = active.id();
+                    if plan_mode
+                        && let Some(parser) = proposed_plan_parser.as_mut()
+                        && matches!(active, TurnItem::AgentMessage(_))
+                    {
+                        let segments = parser.parse(&delta);
+                        for segment in segments {
+                            let event = AgentMessageContentDeltaEvent {
+                                thread_id: thread_id.clone(),
+                                turn_id: turn_id.clone(),
+                                item_id: item_id.clone(),
+                                delta: segment.delta,
+                                segment: segment.segment,
+                            };
+                            sess.send_event(
+                                &turn_context,
+                                EventMsg::AgentMessageContentDelta(event),
+                            )
+                            .await;
+                        }
+                    } else {
+                        let event = AgentMessageContentDeltaEvent {
+                            thread_id,
+                            turn_id,
+                            item_id,
+                            delta,
+                            segment: AgentMessageDeltaSegment::Normal,
+                        };
+                        sess.send_event(&turn_context, EventMsg::AgentMessageContentDelta(event))
+                            .await;
+                    }
                 } else {
                     error_or_panic("OutputTextDelta without active item".to_string());
                 }

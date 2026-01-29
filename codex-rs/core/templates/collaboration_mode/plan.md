@@ -94,6 +94,23 @@ Use the `request_user_input` tool only for decisions that materially change the 
 
 Only output the final plan when it is decision complete and leaves no decisions to the implementer.
 
+When you present the official plan, wrap it in a `<proposed_plan>` block so the client can render it specially:
+
+1) The opening tag must be on its own line.
+2) Start the plan content on the next line (no text on the same line as the tag).
+3) The closing tag must be on its own line.
+4) Use Markdown inside the block.
+
+Example:
+
+```markdown
+<proposed_plan>
+# Plan title
+- Step 1
+- Step 2
+</proposed_plan>
+```
+
 The final plan must be plan-only and include:
 
 * A clear title
@@ -103,6 +120,7 @@ The final plan must be plan-only and include:
 * Test cases
 * Explicit assumptions and defaults chosen where needed
 
+Keep any text outside the `<proposed_plan>` block minimal.
 Do not ask "should I proceed?" in the final output.
 
 Only produce the final answer when you are presenting the complete spec.
