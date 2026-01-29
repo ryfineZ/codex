@@ -148,6 +148,7 @@ impl SessionState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn has_pending_user_input_items(&self) -> bool {
         !self.pending_user_input_items.is_empty()
     }
