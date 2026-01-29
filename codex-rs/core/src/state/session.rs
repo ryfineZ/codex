@@ -26,7 +26,17 @@ pub(crate) struct SessionState {
     /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
     /// timestamp when resuming a session. Remove this once SQLite is in place.
     pub(crate) initial_context_seeded: bool,
+    /// Buffered `function_call_output` items for `request_user_input` tool calls that were
+    /// interrupted before completion.
+    ///
+    /// Keyed by `call_id` (the tool call id) so each in-flight `request_user_input` call can be
+    /// replayed exactly once on the next user turn.
     pending_user_input_items: HashMap<String, ResponseInputItem>,
+    /// Cached `request_user_input` question definitions for each tool call.
+    ///
+    /// Keyed by `call_id` (the tool call id). Used to render/emit structured
+    /// `RequestUserInputResult` events when a matching `function_call_output` arrives, including
+    /// interrupted partial answers.
     request_user_input_calls: HashMap<String, Vec<RequestUserInputQuestion>>,
 }
 
