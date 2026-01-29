@@ -29,6 +29,7 @@ use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
+use crate::skills_watcher::SkillsWatcher;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -523,6 +524,7 @@ pub(crate) struct App {
     runtime_sandbox_policy_override: Option<SandboxPolicy>,
 
     pub(crate) file_search: FileSearchManager,
+    skills_watcher: Option<SkillsWatcher>,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
 
@@ -639,6 +641,10 @@ impl App {
                 "Failed to carry forward sandbox policy override: {err}"
             ));
         }
+    }
+
+    fn refresh_skills_watcher(&mut self) {
+        self.skills_watcher = SkillsWatcher::start(&self.config, self.app_event_tx.clone());
     }
 
     async fn shutdown_current_thread(&mut self) {
@@ -1086,6 +1092,7 @@ impl App {
             runtime_approval_policy_override: None,
             runtime_sandbox_policy_override: None,
             file_search,
+            skills_watcher: None,
             enhanced_keys_supported,
             transcript_cells: Vec::new(),
             overlay: None,
@@ -1106,6 +1113,8 @@ impl App {
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
         };
+
+        app.refresh_skills_watcher();
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
         #[cfg(target_os = "windows")]
@@ -1362,6 +1371,7 @@ impl App {
                             Ok(resumed) => {
                                 self.shutdown_current_thread().await;
                                 self.config = resume_config;
+                                self.refresh_skills_watcher();
                                 tui.set_notification_method(self.config.tui_notification_method);
                                 self.file_search.update_search_dir(self.config.cwd.clone());
                                 let init = self.chatwidget_init_for_forked_or_resumed_thread(
@@ -2620,6 +2630,7 @@ mod tests {
             runtime_approval_policy_override: None,
             runtime_sandbox_policy_override: None,
             file_search,
+            skills_watcher: None,
             transcript_cells: Vec::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
@@ -2673,6 +2684,7 @@ mod tests {
                 runtime_approval_policy_override: None,
                 runtime_sandbox_policy_override: None,
                 file_search,
+                skills_watcher: None,
                 transcript_cells: Vec::new(),
                 overlay: None,
                 deferred_history_lines: Vec::new(),
