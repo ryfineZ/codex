@@ -176,7 +176,6 @@ use codex_login::ShutdownHandle;
 use codex_login::run_login_server;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ForcedLoginMethod;
-use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::dynamic_tools::DynamicToolSpec as CoreDynamicToolSpec;
@@ -225,23 +224,6 @@ pub(crate) type PendingRollbacks = Arc<Mutex<HashMap<ThreadId, RequestId>>>;
 pub(crate) struct TurnSummary {
     pub(crate) file_change_started: HashSet<String>,
     pub(crate) last_error: Option<TurnError>,
-    pub(crate) collaboration_mode_kind: Option<ModeKind>,
-    /// Whether we are currently inside a `<proposed_plan>` section.
-    pub(crate) proposed_plan_active: bool,
-    /// Accumulated proposed plan text for the current section.
-    pub(crate) proposed_plan_buffer: String,
-    /// Most recently completed proposed plan text, if any.
-    pub(crate) last_proposed_plan: Option<String>,
-    /// Whether a plan item has been started for this turn.
-    pub(crate) plan_item_started: bool,
-    /// Whether a plan item has been completed for this turn.
-    pub(crate) plan_item_completed: bool,
-    /// Agent message items that have started in plan mode but are deferred.
-    pub(crate) pending_agent_message_starts: HashSet<String>,
-    /// Agent message items that have been started for the client.
-    pub(crate) agent_message_started: HashSet<String>,
-    /// Accumulated non-plan agent message text keyed by item id.
-    pub(crate) agent_message_normal_text_by_id: HashMap<String, String>,
 }
 
 pub(crate) type TurnSummaryStore = Arc<Mutex<HashMap<ThreadId, TurnSummary>>>;
@@ -3889,7 +3871,7 @@ impl CodexMessageProcessor {
     }
 
     async fn turn_start(&self, request_id: RequestId, params: TurnStartParams) {
-        let (thread_id, thread) = match self.load_thread(&params.thread_id).await {
+        let (_thread_id, thread) = match self.load_thread(&params.thread_id).await {
             Ok(v) => v,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
@@ -3903,12 +3885,6 @@ impl CodexMessageProcessor {
             .into_iter()
             .map(V2UserInput::into_core)
             .collect();
-
-        if let Some(mode_kind) = params.collaboration_mode.as_ref().map(|mode| mode.mode) {
-            let mut summaries = self.turn_summary_store.lock().await;
-            let summary = summaries.entry(thread_id).or_default();
-            summary.collaboration_mode_kind = Some(mode_kind);
-        }
 
         let has_any_overrides = params.cwd.is_some()
             || params.approval_policy.is_some()

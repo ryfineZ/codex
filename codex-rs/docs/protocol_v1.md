@@ -73,8 +73,9 @@ For complete documentation of the `Op` and `EventMsg` variants, refer to [protoc
   - `Op::ListSkills` – Request skills for one or more cwd values (optionally `force_reload`)
   - `Op::UserTurn` and `Op::OverrideTurnContext` accept an optional `personality` override that updates the model’s communication style
 - `EventMsg`
-  - `EventMsg::AgentMessage` – Messages from the `Model`
-  - `EventMsg::AgentMessageContentDelta` – Streaming assistant text; in plan mode it includes a `segment` marker (`normal`, `proposedPlanStart`, `proposedPlanDelta`, `proposedPlanEnd`) to identify `<proposed_plan>` regions while streaming
+- `EventMsg::AgentMessage` – Messages from the `Model`
+- `EventMsg::AgentMessageContentDelta` – Streaming assistant text (plan output is emitted separately in plan mode)
+- `EventMsg::PlanDelta` – Streaming proposed plan text when the model emits a `<proposed_plan>` block in plan mode
   - `EventMsg::ExecApprovalRequest` – Request approval from user to execute a command
   - `EventMsg::RequestUserInput` – Request user input for a tool call (questions can include options plus `isOther` to add a free-form choice)
   - `EventMsg::TurnStarted` – Turn start metadata including `model_context_window` and `collaboration_mode_kind`

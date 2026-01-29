@@ -53,7 +53,7 @@ async fn plan_mode_uses_proposed_plan_block_for_plan_item() -> Result<()> {
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let _turn = start_plan_mode_turn(&mut mcp).await?;
+    let turn = start_plan_mode_turn(&mut mcp).await?;
     let (_, completed_items, plan_deltas, turn_completed) =
         collect_turn_notifications(&mut mcp).await?;
 
@@ -110,7 +110,7 @@ async fn plan_mode_without_proposed_plan_does_not_emit_plan_item() -> Result<()>
     let mut mcp = McpProcess::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let turn = start_plan_mode_turn(&mut mcp).await?;
+    let _turn = start_plan_mode_turn(&mut mcp).await?;
     let (_, completed_items, plan_deltas, _) = collect_turn_notifications(&mut mcp).await?;
 
     let plan_items = completed_items

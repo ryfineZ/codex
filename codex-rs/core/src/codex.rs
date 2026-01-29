@@ -29,6 +29,7 @@ use crate::parse_turn_item;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
+use crate::stream_events_utils::last_assistant_message_from_item;
 use crate::terminal;
 use crate::truncate::TruncationPolicy;
 use crate::user_notification::UserNotifier;
@@ -42,6 +43,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::BaseInstructions;
@@ -124,6 +126,7 @@ use crate::mentions::collect_explicit_app_paths;
 use crate::mentions::collect_tool_mentions_from_messages;
 use crate::model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
 use crate::project_doc::get_user_instructions;
+use crate::proposed_plan_parser::ParsedAgentDelta;
 use crate::proposed_plan_parser::ProposedPlanParser;
 use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentMessageDeltaSegment;
@@ -138,6 +141,7 @@ use crate::protocol::EventMsg;
 use crate::protocol::ExecApprovalRequestEvent;
 use crate::protocol::McpServerRefreshConfig;
 use crate::protocol::Op;
+use crate::protocol::PlanDeltaEvent;
 use crate::protocol::RateLimitSnapshot;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
@@ -3593,6 +3597,152 @@ struct SamplingRequestResult {
     last_agent_message: Option<String>,
 }
 
+struct PlanItemState {
+    item_id: String,
+    started: bool,
+    completed: bool,
+    buffer: String,
+}
+
+impl PlanItemState {
+    fn new(turn_id: &str) -> Self {
+        Self {
+            item_id: format!("{turn_id}-plan"),
+            started: false,
+            completed: false,
+            buffer: String::new(),
+        }
+    }
+
+    async fn start(&mut self, sess: &Session, turn_context: &TurnContext) {
+        if self.started || self.completed {
+            return;
+        }
+        self.started = true;
+        let item = TurnItem::Plan(PlanItem {
+            id: self.item_id.clone(),
+            text: String::new(),
+        });
+        sess.emit_turn_item_started(turn_context, &item).await;
+    }
+
+    async fn push_delta(&mut self, sess: &Session, turn_context: &TurnContext, delta: &str) {
+        if self.completed {
+            return;
+        }
+        self.buffer.push_str(delta);
+        if delta.is_empty() {
+            return;
+        }
+        let event = PlanDeltaEvent {
+            thread_id: sess.conversation_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            item_id: self.item_id.clone(),
+            delta: delta.to_string(),
+        };
+        sess.send_event(turn_context, EventMsg::PlanDelta(event))
+            .await;
+    }
+
+    async fn complete(&mut self, sess: &Session, turn_context: &TurnContext) {
+        if self.completed || !self.started {
+            return;
+        }
+        self.completed = true;
+        let item = TurnItem::Plan(PlanItem {
+            id: self.item_id.clone(),
+            text: self.buffer.clone(),
+        });
+        sess.emit_turn_item_completed(turn_context, item).await;
+    }
+}
+
+async fn maybe_emit_pending_agent_message_start(
+    sess: &Session,
+    turn_context: &TurnContext,
+    pending: &mut HashMap<String, TurnItem>,
+    started: &mut HashSet<String>,
+    item_id: &str,
+) {
+    if started.contains(item_id) {
+        return;
+    }
+    if let Some(item) = pending.remove(item_id) {
+        sess.emit_turn_item_started(turn_context, &item).await;
+        started.insert(item_id.to_string());
+    }
+}
+
+fn agent_message_text(item: &codex_protocol::items::AgentMessageItem) -> String {
+    item.content
+        .iter()
+        .map(|entry| match entry {
+            codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
+        })
+        .collect()
+}
+
+async fn handle_plan_segments(
+    sess: &Session,
+    turn_context: &TurnContext,
+    plan_item_state: &mut Option<PlanItemState>,
+    pending_agent_message_items: &mut HashMap<String, TurnItem>,
+    started_agent_message_items: &mut HashSet<String>,
+    item_id: &str,
+    segments: Vec<ParsedAgentDelta>,
+) {
+    for segment in segments {
+        match segment.segment {
+            AgentMessageDeltaSegment::Normal => {
+                if !segment.delta.is_empty() {
+                    maybe_emit_pending_agent_message_start(
+                        sess,
+                        turn_context,
+                        pending_agent_message_items,
+                        started_agent_message_items,
+                        item_id,
+                    )
+                    .await;
+                }
+                if !segment.delta.is_empty() {
+                    let event = AgentMessageContentDeltaEvent {
+                        thread_id: sess.conversation_id.to_string(),
+                        turn_id: turn_context.sub_id.clone(),
+                        item_id: item_id.to_string(),
+                        delta: segment.delta,
+                        segment: AgentMessageDeltaSegment::Normal,
+                    };
+                    sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
+                        .await;
+                }
+            }
+            AgentMessageDeltaSegment::ProposedPlanStart => {
+                if let Some(state) = plan_item_state.as_mut()
+                    && !state.completed
+                {
+                    state.buffer.clear();
+                    state.start(sess, turn_context).await;
+                }
+            }
+            AgentMessageDeltaSegment::ProposedPlanDelta => {
+                if let Some(state) = plan_item_state.as_mut()
+                    && !state.completed
+                {
+                    if !state.started {
+                        state.start(sess, turn_context).await;
+                    }
+                    state.push_delta(sess, turn_context, &segment.delta).await;
+                }
+            }
+            AgentMessageDeltaSegment::ProposedPlanEnd => {
+                if let Some(state) = plan_item_state.as_mut() {
+                    state.complete(sess, turn_context).await;
+                }
+            }
+        }
+    }
+}
+
 async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>>,
     sess: Arc<Session>,
@@ -3675,6 +3825,9 @@ async fn try_run_sampling_request(
     let mut should_emit_turn_diff = false;
     let plan_mode = turn_context.collaboration_mode_kind == ModeKind::Plan;
     let mut proposed_plan_parser = plan_mode.then(ProposedPlanParser::new);
+    let mut pending_agent_message_items: HashMap<String, TurnItem> = HashMap::new();
+    let mut started_agent_message_items: HashSet<String> = HashSet::new();
+    let mut plan_item_state = plan_mode.then(|| PlanItemState::new(&turn_context.sub_id));
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -3719,25 +3872,77 @@ async fn try_run_sampling_request(
                 {
                     let segments = parser.finish();
                     if !segments.is_empty() {
-                        let thread_id = sess.conversation_id.to_string();
-                        let turn_id = turn_context.sub_id.clone();
                         let item_id = active.id();
-                        for segment in segments {
-                            let event = AgentMessageContentDeltaEvent {
-                                thread_id: thread_id.clone(),
-                                turn_id: turn_id.clone(),
-                                item_id: item_id.clone(),
-                                delta: segment.delta,
-                                segment: segment.segment,
-                            };
-                            sess.send_event(
-                                &turn_context,
-                                EventMsg::AgentMessageContentDelta(event),
-                            )
-                            .await;
-                        }
+                        handle_plan_segments(
+                            &sess,
+                            &turn_context,
+                            &mut plan_item_state,
+                            &mut pending_agent_message_items,
+                            &mut started_agent_message_items,
+                            &item_id,
+                            segments,
+                        )
+                        .await;
                     }
                 }
+
+                if plan_mode
+                    && let ResponseItem::Message { role, .. } = &item
+                    && role == "assistant"
+                {
+                    if let Some(turn_item) = handle_non_tool_response_item(&item, plan_mode).await {
+                        if let TurnItem::AgentMessage(agent_message) = &turn_item {
+                            let agent_message_id = agent_message.id.clone();
+                            let text = agent_message_text(agent_message);
+                            if !text.trim().is_empty() {
+                                maybe_emit_pending_agent_message_start(
+                                    &sess,
+                                    &turn_context,
+                                    &mut pending_agent_message_items,
+                                    &mut started_agent_message_items,
+                                    &agent_message_id,
+                                )
+                                .await;
+                                if !started_agent_message_items.contains(&agent_message_id) {
+                                    let start_item = pending_agent_message_items
+                                        .remove(&agent_message_id)
+                                        .unwrap_or_else(|| {
+                                            TurnItem::AgentMessage(
+                                                codex_protocol::items::AgentMessageItem {
+                                                    id: agent_message_id.clone(),
+                                                    content: Vec::new(),
+                                                },
+                                            )
+                                        });
+                                    sess.emit_turn_item_started(&turn_context, &start_item)
+                                        .await;
+                                    started_agent_message_items.insert(agent_message_id.clone());
+                                }
+                                sess.emit_turn_item_completed(&turn_context, turn_item.clone())
+                                    .await;
+                                started_agent_message_items.remove(&agent_message_id);
+                            } else {
+                                pending_agent_message_items.remove(&agent_message_id);
+                                started_agent_message_items.remove(&agent_message_id);
+                            }
+                        } else {
+                            if previously_active_item.is_none() {
+                                sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                            }
+                            sess.emit_turn_item_completed(&turn_context, turn_item)
+                                .await;
+                        }
+                    }
+
+                    sess.record_conversation_items(&turn_context, std::slice::from_ref(&item))
+                        .await;
+                    if let Some(agent_message) = last_assistant_message_from_item(&item, plan_mode)
+                    {
+                        last_agent_message = Some(agent_message);
+                    }
+                    continue;
+                }
+
                 let mut ctx = HandleOutputCtx {
                     sess: sess.clone(),
                     turn_context: turn_context.clone(),
@@ -3758,7 +3963,12 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::OutputItemAdded(item) => {
                 if let Some(turn_item) = handle_non_tool_response_item(&item, plan_mode).await {
-                    sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                    if plan_mode && matches!(turn_item, TurnItem::AgentMessage(_)) {
+                        let item_id = turn_item.id();
+                        pending_agent_message_items.insert(item_id, turn_item.clone());
+                    } else {
+                        sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                    }
                     active_item = Some(turn_item);
                 }
             }
@@ -3788,23 +3998,17 @@ async fn try_run_sampling_request(
                 {
                     let segments = parser.finish();
                     if !segments.is_empty() {
-                        let thread_id = sess.conversation_id.to_string();
-                        let turn_id = turn_context.sub_id.clone();
                         let item_id = active.id();
-                        for segment in segments {
-                            let event = AgentMessageContentDeltaEvent {
-                                thread_id: thread_id.clone(),
-                                turn_id: turn_id.clone(),
-                                item_id: item_id.clone(),
-                                delta: segment.delta,
-                                segment: segment.segment,
-                            };
-                            sess.send_event(
-                                &turn_context,
-                                EventMsg::AgentMessageContentDelta(event),
-                            )
-                            .await;
-                        }
+                        handle_plan_segments(
+                            &sess,
+                            &turn_context,
+                            &mut plan_item_state,
+                            &mut pending_agent_message_items,
+                            &mut started_agent_message_items,
+                            &item_id,
+                            segments,
+                        )
+                        .await;
                     }
                 }
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
@@ -3822,32 +4026,26 @@ async fn try_run_sampling_request(
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
                 if let Some(active) = active_item.as_ref() {
-                    let thread_id = sess.conversation_id.to_string();
-                    let turn_id = turn_context.sub_id.clone();
                     let item_id = active.id();
                     if plan_mode
                         && let Some(parser) = proposed_plan_parser.as_mut()
                         && matches!(active, TurnItem::AgentMessage(_))
                     {
                         let segments = parser.parse(&delta);
-                        for segment in segments {
-                            let event = AgentMessageContentDeltaEvent {
-                                thread_id: thread_id.clone(),
-                                turn_id: turn_id.clone(),
-                                item_id: item_id.clone(),
-                                delta: segment.delta,
-                                segment: segment.segment,
-                            };
-                            sess.send_event(
-                                &turn_context,
-                                EventMsg::AgentMessageContentDelta(event),
-                            )
-                            .await;
-                        }
+                        handle_plan_segments(
+                            &sess,
+                            &turn_context,
+                            &mut plan_item_state,
+                            &mut pending_agent_message_items,
+                            &mut started_agent_message_items,
+                            &item_id,
+                            segments,
+                        )
+                        .await;
                     } else {
                         let event = AgentMessageContentDeltaEvent {
-                            thread_id,
-                            turn_id,
+                            thread_id: sess.conversation_id.to_string(),
+                            turn_id: turn_context.sub_id.clone(),
                             item_id,
                             delta,
                             segment: AgentMessageDeltaSegment::Normal,

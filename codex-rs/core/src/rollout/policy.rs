@@ -90,6 +90,7 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::AgentMessageContentDelta(_)
+        | EventMsg::PlanDelta(_)
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::SkillsUpdateAvailable

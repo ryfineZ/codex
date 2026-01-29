@@ -830,6 +830,7 @@ pub enum EventMsg {
     ItemCompleted(ItemCompletedEvent),
 
     AgentMessageContentDelta(AgentMessageContentDeltaEvent),
+    PlanDelta(PlanDeltaEvent),
     ReasoningContentDelta(ReasoningContentDeltaEvent),
     ReasoningRawContentDelta(ReasoningRawContentDeltaEvent),
 
@@ -1023,6 +1024,14 @@ impl HasLegacyEvent for AgentMessageContentDeltaEvent {
             | AgentMessageDeltaSegment::ProposedPlanEnd => Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct PlanDeltaEvent {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub delta: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]

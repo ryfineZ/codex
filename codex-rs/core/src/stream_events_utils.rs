@@ -191,11 +191,12 @@ pub(crate) fn last_assistant_message_from_item(
             codex_protocol::models::ContentItem::OutputText { text } => Some(text.clone()),
             _ => None,
         });
-        return text.map(|text| {
+        return text.and_then(|text| {
             if plan_mode {
-                strip_proposed_plan_blocks(&text)
+                let stripped = strip_proposed_plan_blocks(&text);
+                (!stripped.trim().is_empty()).then_some(stripped)
             } else {
-                text
+                Some(text)
             }
         });
     }

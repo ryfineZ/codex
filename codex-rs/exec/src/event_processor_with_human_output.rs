@@ -768,6 +768,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::ItemStarted(_)
             | EventMsg::ItemCompleted(_)
             | EventMsg::AgentMessageContentDelta(_)
+            | EventMsg::PlanDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::SkillsUpdateAvailable

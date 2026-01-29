@@ -41,9 +41,7 @@ use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
-use codex_core::protocol::AgentMessageContentDeltaEvent;
 use codex_core::protocol::AgentMessageDeltaEvent;
-use codex_core::protocol::AgentMessageDeltaSegment;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
@@ -523,12 +521,12 @@ pub(crate) struct ChatWidget {
     had_work_activity: bool,
     // Whether the current turn emitted a plan update.
     saw_plan_update_this_turn: bool,
-    // Whether the current turn emitted a proposed plan block.
-    saw_proposed_plan_this_turn: bool,
-    // Incremental buffer for `<proposed_plan>` content while streaming.
-    proposed_plan_buffer: String,
-    // True while currently inside a `<proposed_plan>` block.
-    proposed_plan_active: bool,
+    // Whether the current turn emitted a proposed plan item.
+    saw_plan_item_this_turn: bool,
+    // Incremental buffer for streamed plan content.
+    plan_delta_buffer: String,
+    // True while a plan item is streaming.
+    plan_item_active: bool,
     // Status-indicator elapsed seconds captured at the last emitted final-message separator.
     //
     // This lets the separator show per-chunk work time (since the previous separator) rather than
@@ -874,38 +872,30 @@ impl ChatWidget {
         self.handle_streaming_delta(delta);
     }
 
-    fn on_agent_message_content_delta(&mut self, event: AgentMessageContentDeltaEvent) {
+    fn on_plan_delta(&mut self, delta: String) {
         if self.active_mode_kind() != ModeKind::Plan {
             return;
         }
-        match event.segment {
-            AgentMessageDeltaSegment::Normal => {}
-            AgentMessageDeltaSegment::ProposedPlanStart => {
-                self.proposed_plan_active = true;
-                self.proposed_plan_buffer.clear();
-            }
-            AgentMessageDeltaSegment::ProposedPlanDelta => {
-                if !self.proposed_plan_active {
-                    self.proposed_plan_active = true;
-                    self.proposed_plan_buffer.clear();
-                }
-                self.proposed_plan_buffer.push_str(&event.delta);
-            }
-            AgentMessageDeltaSegment::ProposedPlanEnd => {
-                self.proposed_plan_active = false;
-                self.emit_proposed_plan_history_if_any();
-            }
+        if !self.plan_item_active {
+            self.plan_item_active = true;
+            self.plan_delta_buffer.clear();
         }
+        self.plan_delta_buffer.push_str(&delta);
     }
 
-    fn emit_proposed_plan_history_if_any(&mut self) {
-        let text = self.proposed_plan_buffer.trim().to_string();
-        self.proposed_plan_buffer.clear();
-        if text.is_empty() {
+    fn on_plan_item_completed(&mut self, text: String) {
+        let plan_text = if text.trim().is_empty() {
+            self.plan_delta_buffer.trim().to_string()
+        } else {
+            text
+        };
+        self.plan_delta_buffer.clear();
+        self.plan_item_active = false;
+        if plan_text.is_empty() {
             return;
         }
-        self.saw_proposed_plan_this_turn = true;
-        self.add_to_history(history_cell::new_proposed_plan(text));
+        self.saw_plan_item_this_turn = true;
+        self.add_to_history(history_cell::new_proposed_plan(plan_text));
     }
 
     fn on_agent_reasoning_delta(&mut self, delta: String) {
@@ -954,9 +944,9 @@ impl ChatWidget {
     fn on_task_started(&mut self) {
         self.agent_turn_running = true;
         self.saw_plan_update_this_turn = false;
-        self.saw_proposed_plan_this_turn = false;
-        self.proposed_plan_buffer.clear();
-        self.proposed_plan_active = false;
+        self.saw_plan_item_this_turn = false;
+        self.plan_delta_buffer.clear();
+        self.plan_item_active = false;
         self.bottom_pane.clear_quit_shortcut_hint();
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
@@ -970,10 +960,6 @@ impl ChatWidget {
     }
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
-        if self.proposed_plan_active {
-            self.proposed_plan_active = false;
-            self.emit_proposed_plan_history_if_any();
-        }
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
         self.flush_unified_exec_wait_streak();
@@ -1010,7 +996,7 @@ impl ChatWidget {
         if self.active_mode_kind() != ModeKind::Plan {
             return;
         }
-        if !self.saw_proposed_plan_this_turn {
+        if !self.saw_plan_item_this_turn {
             return;
         }
         if !self.bottom_pane.no_modal_or_popup_active() {
@@ -2142,9 +2128,9 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             saw_plan_update_this_turn: false,
-            saw_proposed_plan_this_turn: false,
-            proposed_plan_buffer: String::new(),
-            proposed_plan_active: false,
+            saw_plan_item_this_turn: false,
+            plan_delta_buffer: String::new(),
+            plan_item_active: false,
             last_separator_elapsed_secs: None,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
@@ -2273,9 +2259,9 @@ impl ChatWidget {
             thread_id: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
-            saw_proposed_plan_this_turn: false,
-            proposed_plan_buffer: String::new(),
-            proposed_plan_active: false,
+            saw_plan_item_this_turn: false,
+            plan_delta_buffer: String::new(),
+            plan_item_active: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
@@ -2413,9 +2399,9 @@ impl ChatWidget {
             needs_final_message_separator: false,
             had_work_activity: false,
             saw_plan_update_this_turn: false,
-            saw_proposed_plan_this_turn: false,
-            proposed_plan_buffer: String::new(),
-            proposed_plan_active: false,
+            saw_plan_item_this_turn: false,
+            plan_delta_buffer: String::new(),
+            plan_item_active: false,
             last_separator_elapsed_secs: None,
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
@@ -3109,6 +3095,7 @@ impl ChatWidget {
 
         match msg {
             EventMsg::AgentMessageDelta(_)
+            | EventMsg::PlanDelta(_)
             | EventMsg::AgentReasoningDelta(_)
             | EventMsg::TerminalInteraction(_)
             | EventMsg::ExecCommandOutputDelta(_) => {}
@@ -3123,7 +3110,7 @@ impl ChatWidget {
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
             }
-            EventMsg::AgentMessageContentDelta(event) => self.on_agent_message_content_delta(event),
+            EventMsg::PlanDelta(event) => self.on_plan_delta(event.delta),
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })
             | EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
                 delta,
@@ -3228,10 +3215,15 @@ impl ChatWidget {
             EventMsg::ThreadRolledBack(_) => {}
             EventMsg::RawResponseItem(_)
             | EventMsg::ItemStarted(_)
-            | EventMsg::ItemCompleted(_)
+            | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
             | EventMsg::DynamicToolCallRequest(_) => {}
+            EventMsg::ItemCompleted(event) => {
+                if let codex_protocol::items::TurnItem::Plan(plan_item) = event.item {
+                    self.on_plan_item_completed(plan_item.text);
+                }
+            }
         }
     }
 

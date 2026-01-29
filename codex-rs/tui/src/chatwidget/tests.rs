@@ -23,9 +23,7 @@ use codex_core::config::ConstraintError;
 use codex_core::config_loader::RequirementSource;
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
-use codex_core::protocol::AgentMessageContentDeltaEvent;
 use codex_core::protocol::AgentMessageDeltaEvent;
-use codex_core::protocol::AgentMessageDeltaSegment;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
@@ -836,9 +834,9 @@ async fn make_chatwidget_manual(
         needs_final_message_separator: false,
         had_work_activity: false,
         saw_plan_update_this_turn: false,
-        saw_proposed_plan_this_turn: false,
-        proposed_plan_buffer: String::new(),
-        proposed_plan_active: false,
+        saw_plan_item_this_turn: false,
+        plan_delta_buffer: String::new(),
+        plan_item_active: false,
         last_separator_elapsed_secs: None,
         last_rendered_width: std::cell::Cell::new(None),
         feedback: codex_feedback::CodexFeedback::new(),
@@ -1310,27 +1308,8 @@ async fn plan_implementation_popup_shows_after_proposed_plan_output() {
     chat.set_collaboration_mask(plan_mask);
 
     chat.on_task_started();
-    chat.on_agent_message_content_delta(AgentMessageContentDeltaEvent {
-        thread_id: String::new(),
-        turn_id: String::new(),
-        item_id: "msg-1".to_string(),
-        delta: String::new(),
-        segment: AgentMessageDeltaSegment::ProposedPlanStart,
-    });
-    chat.on_agent_message_content_delta(AgentMessageContentDeltaEvent {
-        thread_id: String::new(),
-        turn_id: String::new(),
-        item_id: "msg-1".to_string(),
-        delta: "- Step 1\n- Step 2\n".to_string(),
-        segment: AgentMessageDeltaSegment::ProposedPlanDelta,
-    });
-    chat.on_agent_message_content_delta(AgentMessageContentDeltaEvent {
-        thread_id: String::new(),
-        turn_id: String::new(),
-        item_id: "msg-1".to_string(),
-        delta: String::new(),
-        segment: AgentMessageDeltaSegment::ProposedPlanEnd,
-    });
+    chat.on_plan_delta("- Step 1\n- Step 2\n".to_string());
+    chat.on_plan_item_completed("- Step 1\n- Step 2\n".to_string());
     chat.on_task_complete(None, false);
 
     let popup = render_bottom_popup(&chat, 80);

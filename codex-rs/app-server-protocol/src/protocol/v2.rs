@@ -2062,6 +2062,10 @@ impl From<CoreTurnItem> for ThreadItem {
                     .collect::<String>();
                 ThreadItem::AgentMessage { id: agent.id, text }
             }
+            CoreTurnItem::Plan(plan) => ThreadItem::Plan {
+                id: plan.id,
+                text: plan.text,
+            },
             CoreTurnItem::Reasoning(reasoning) => ThreadItem::Reasoning {
                 id: reasoning.id,
                 summary: reasoning.summary_text,
