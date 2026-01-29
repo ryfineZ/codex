@@ -621,16 +621,17 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &turn_summary_store,
             )
             .await;
-            let notification = AgentMessageDeltaNotification {
-                thread_id: conversation_id.to_string(),
-                turn_id: event_turn_id.clone(),
-                item_id,
-                delta,
-                segment,
-            };
-            outgoing
-                .send_server_notification(ServerNotification::AgentMessageDelta(notification))
-                .await;
+            if matches!(segment, AgentMessageDeltaSegment::Normal) {
+                let notification = AgentMessageDeltaNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: event_turn_id.clone(),
+                    item_id,
+                    delta,
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::AgentMessageDelta(notification))
+                    .await;
+            }
         }
         EventMsg::ContextCompacted(..) => {
             let notification = ContextCompactedNotification {

@@ -1013,12 +1013,13 @@ pub struct AgentMessageContentDeltaEvent {
 impl HasLegacyEvent for AgentMessageContentDeltaEvent {
     fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
         match self.segment {
-            AgentMessageDeltaSegment::Normal | AgentMessageDeltaSegment::ProposedPlanDelta => {
+            AgentMessageDeltaSegment::Normal => {
                 vec![EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
                     delta: self.delta.clone(),
                 })]
             }
             AgentMessageDeltaSegment::ProposedPlanStart
+            | AgentMessageDeltaSegment::ProposedPlanDelta
             | AgentMessageDeltaSegment::ProposedPlanEnd => Vec::new(),
         }
     }

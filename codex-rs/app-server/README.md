@@ -465,7 +465,7 @@ There are additional item-specific events:
 
 #### agentMessage
 
-- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply. In plan mode, the payload also includes `segment` (experimental) with values `normal`, `proposedPlanStart`, `proposedPlanDelta`, or `proposedPlanEnd` to mark the streamed `<proposed_plan>` region; start/end markers may carry an empty `delta`.
+- `item/agentMessage/delta` — appends streamed text for the agent message; concatenate `delta` values for the same `itemId` in order to reconstruct the full reply. In plan mode, `<proposed_plan>` content is not emitted here; it streams via `item/plan/delta`.
 
 #### plan
 
