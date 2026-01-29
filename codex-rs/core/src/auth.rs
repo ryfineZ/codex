@@ -71,11 +71,9 @@ pub enum RefreshTokenError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExternalAuthState {
+pub struct ExternalAuthTokens {
     pub access_token: String,
     pub id_token: String,
-    /// Derived from the ID token when possible.
-    pub account_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +92,7 @@ pub trait ExternalAuthRefresher: Send + Sync {
     async fn refresh(
         &self,
         context: ExternalAuthRefreshContext,
-    ) -> std::io::Result<ExternalAuthState>;
+    ) -> std::io::Result<ExternalAuthTokens>;
 }
 
 impl RefreshTokenError {
@@ -432,7 +430,7 @@ fn load_auth(
     );
     if let Some(auth_dot_json) = ephemeral_storage.load()? {
         let client = crate::default_client::create_client();
-        let auth = codex_auth_from_auth_dot_json(
+        let auth = CodexAuth::from_auth_dot_json(
             codex_home,
             auth_dot_json,
             AuthCredentialsStoreMode::Ephemeral,
@@ -452,7 +450,7 @@ fn load_auth(
     };
 
     let client = crate::default_client::create_client();
-    let auth = codex_auth_from_auth_dot_json(
+    let auth = CodexAuth::from_auth_dot_json(
         codex_home,
         auth_dot_json,
         auth_credentials_store_mode,
@@ -608,70 +606,71 @@ fn refresh_token_endpoint() -> String {
         .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string())
 }
 
-fn auth_dot_json_from_external(external: &ExternalAuthState, id_token: IdTokenInfo) -> AuthDotJson {
-    let account_id = external
-        .account_id
-        .clone()
-        .or_else(|| id_token.chatgpt_account_id.clone());
-    let tokens = TokenData {
-        id_token,
-        access_token: external.access_token.clone(),
-        refresh_token: String::new(),
-        account_id,
-    };
-
-    AuthDotJson {
-        auth_mode: Some(AuthMode::ChatgptAuthTokens),
-        openai_api_key: None,
-        tokens: Some(tokens),
-        last_refresh: Some(Utc::now()),
-    }
-}
-
-fn resolve_auth_mode(auth_dot_json: &AuthDotJson) -> AuthMode {
-    if let Some(mode) = auth_dot_json.auth_mode {
-        return mode;
-    }
-    if auth_dot_json.openai_api_key.is_some() {
-        return AuthMode::ApiKey;
-    }
-    AuthMode::ChatGPT
-}
-
-fn storage_mode_for_auth(
-    auth_mode: AuthMode,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
-) -> AuthCredentialsStoreMode {
-    if auth_mode == AuthMode::ChatgptAuthTokens {
-        AuthCredentialsStoreMode::Ephemeral
-    } else {
-        auth_credentials_store_mode
-    }
-}
-
-fn codex_auth_from_auth_dot_json(
-    codex_home: &Path,
-    auth_dot_json: AuthDotJson,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
-    client: CodexHttpClient,
-) -> std::io::Result<CodexAuth> {
-    let auth_mode = resolve_auth_mode(&auth_dot_json);
-    if auth_mode == AuthMode::ApiKey {
-        let Some(api_key) = auth_dot_json.openai_api_key.as_deref() else {
-            return Err(std::io::Error::other("API key auth is missing a key."));
+impl AuthDotJson {
+    fn from_external_tokens(external: &ExternalAuthTokens, id_token: IdTokenInfo) -> Self {
+        let account_id = id_token.chatgpt_account_id.clone();
+        let tokens = TokenData {
+            id_token,
+            access_token: external.access_token.clone(),
+            refresh_token: String::new(),
+            account_id,
         };
-        return Ok(CodexAuth::from_api_key_with_client(api_key, client));
+
+        Self {
+            auth_mode: Some(AuthMode::ChatgptAuthTokens),
+            openai_api_key: None,
+            tokens: Some(tokens),
+            last_refresh: Some(Utc::now()),
+        }
     }
 
-    let storage_mode = storage_mode_for_auth(auth_mode, auth_credentials_store_mode);
-    let storage = create_auth_storage(codex_home.to_path_buf(), storage_mode);
-    Ok(CodexAuth {
-        api_key: None,
-        mode: auth_mode,
-        storage,
-        auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
-        client,
-    })
+    fn resolved_mode(&self) -> AuthMode {
+        if let Some(mode) = self.auth_mode {
+            return mode;
+        }
+        if self.openai_api_key.is_some() {
+            return AuthMode::ApiKey;
+        }
+        AuthMode::ChatGPT
+    }
+
+    fn storage_mode(
+        &self,
+        auth_credentials_store_mode: AuthCredentialsStoreMode,
+    ) -> AuthCredentialsStoreMode {
+        if self.resolved_mode() == AuthMode::ChatgptAuthTokens {
+            AuthCredentialsStoreMode::Ephemeral
+        } else {
+            auth_credentials_store_mode
+        }
+    }
+}
+
+impl CodexAuth {
+    fn from_auth_dot_json(
+        codex_home: &Path,
+        auth_dot_json: AuthDotJson,
+        auth_credentials_store_mode: AuthCredentialsStoreMode,
+        client: CodexHttpClient,
+    ) -> std::io::Result<Self> {
+        let auth_mode = auth_dot_json.resolved_mode();
+        if auth_mode == AuthMode::ApiKey {
+            let Some(api_key) = auth_dot_json.openai_api_key.as_deref() else {
+                return Err(std::io::Error::other("API key auth is missing a key."));
+            };
+            return Ok(CodexAuth::from_api_key_with_client(api_key, client));
+        }
+
+        let storage_mode = auth_dot_json.storage_mode(auth_credentials_store_mode);
+        let storage = create_auth_storage(codex_home.to_path_buf(), storage_mode);
+        Ok(Self {
+            api_key: None,
+            mode: auth_mode,
+            storage,
+            auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
+            client,
+        })
+    }
 }
 
 use std::sync::RwLock;
@@ -718,10 +717,15 @@ enum UnauthorizedRecoveryMode {
 // to API fail with 401 status code.
 // The client calls next() every time it encounters a 401 error, one time per retry.
 // For API key based authentication, we don't do anything and let the error bubble to the user.
+//
 // For ChatGPT based authentication, we:
 // 1. Attempt to reload the auth data from disk. We only reload if the account id matches the one the current process is running as.
 // 2. Attempt to refresh the token using OAuth token refresh flow.
 // If after both steps the server still responds with 401 we let the error bubble to the user.
+//
+// For external ChatGPT auth tokens (chatgptAuthTokens), UnauthorizedRecovery does not touch disk or refresh
+// tokens locally. Instead it calls the ExternalAuthRefresher (account/chatgptAuthTokens/refresh) to ask the
+// parent app for new tokens, stores them in the ephemeral auth store, and retries once.
 pub struct UnauthorizedRecovery {
     manager: Arc<AuthManager>,
     step: UnauthorizedRecoveryStep,
@@ -1133,7 +1137,7 @@ impl AuthManager {
                 )));
             }
         }
-        let auth_dot_json = auth_dot_json_from_external(&refreshed, id_token);
+        let auth_dot_json = AuthDotJson::from_external_tokens(&refreshed, id_token);
         save_auth(
             &self.codex_home,
             &auth_dot_json,

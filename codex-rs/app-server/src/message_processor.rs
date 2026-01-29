@@ -29,7 +29,7 @@ use codex_core::ThreadManager;
 use codex_core::auth::ExternalAuthRefreshContext;
 use codex_core::auth::ExternalAuthRefreshReason;
 use codex_core::auth::ExternalAuthRefresher;
-use codex_core::auth::ExternalAuthState;
+use codex_core::auth::ExternalAuthTokens;
 use codex_core::config::Config;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::default_client::SetOriginatorError;
@@ -64,7 +64,7 @@ impl ExternalAuthRefresher for ExternalAuthRefreshBridge {
     async fn refresh(
         &self,
         context: ExternalAuthRefreshContext,
-    ) -> std::io::Result<ExternalAuthState> {
+    ) -> std::io::Result<ExternalAuthTokens> {
         let params = ChatgptAuthTokensRefreshParams {
             reason: Self::map_reason(context.reason),
             previous_account_id: context.previous_account_id,
@@ -91,10 +91,9 @@ impl ExternalAuthRefresher for ExternalAuthRefreshBridge {
         let response: ChatgptAuthTokensRefreshResponse =
             serde_json::from_value(result).map_err(std::io::Error::other)?;
 
-        Ok(ExternalAuthState {
+        Ok(ExternalAuthTokens {
             access_token: response.access_token,
             id_token: response.id_token,
-            account_id: None,
         })
     }
 }
