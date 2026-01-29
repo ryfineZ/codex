@@ -226,8 +226,6 @@ pub(crate) struct TurnSummary {
     pub(crate) file_change_started: HashSet<String>,
     pub(crate) last_error: Option<TurnError>,
     pub(crate) collaboration_mode_kind: Option<ModeKind>,
-    /// Last completed assistant message id observed for this turn.
-    pub(crate) last_agent_message_id: Option<String>,
     /// Last completed assistant message text observed for this turn.
     pub(crate) last_agent_message_text: Option<String>,
     /// Whether we are currently inside a `<proposed_plan>` section.
@@ -240,6 +238,12 @@ pub(crate) struct TurnSummary {
     pub(crate) plan_item_started: bool,
     /// Whether a plan item has been completed for this turn.
     pub(crate) plan_item_completed: bool,
+    /// Agent message items that have started in plan mode but are deferred.
+    pub(crate) pending_agent_message_starts: HashSet<String>,
+    /// Agent message items that have been started for the client.
+    pub(crate) agent_message_started: HashSet<String>,
+    /// Accumulated non-plan agent message text keyed by item id.
+    pub(crate) agent_message_normal_text_by_id: HashMap<String, String>,
 }
 
 pub(crate) type TurnSummaryStore = Arc<Mutex<HashMap<ThreadId, TurnSummary>>>;

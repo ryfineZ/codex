@@ -795,6 +795,22 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::ItemStarted(item_started_event) => {
+            if matches!(&item_started_event.item, TurnItem::AgentMessage(_)) {
+                let item_id = item_started_event.item.id();
+                let defer_agent_message = {
+                    let mut map = turn_summary_store.lock().await;
+                    let summary = map.entry(conversation_id).or_default();
+                    if is_plan_mode(summary) {
+                        summary.pending_agent_message_starts.insert(item_id);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if defer_agent_message {
+                    return;
+                }
+            }
             let item: ThreadItem = item_started_event.item.clone().into();
             let notification = ItemStartedNotification {
                 thread_id: conversation_id.to_string(),
@@ -807,7 +823,36 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         EventMsg::ItemCompleted(item_completed_event) => {
             if let TurnItem::AgentMessage(agent_message) = &item_completed_event.item {
-                record_plan_output(conversation_id, agent_message, &turn_summary_store).await;
+                if let Some(emission) =
+                    record_plan_output(conversation_id, agent_message, &turn_summary_store).await
+                {
+                    if emission.emit_start {
+                        emit_agent_message_started(
+                            conversation_id,
+                            &event_turn_id,
+                            &agent_message.id,
+                            &outgoing,
+                        )
+                        .await;
+                    }
+                    if emission.emit_completed {
+                        let item = ThreadItem::AgentMessage {
+                            id: agent_message.id.clone(),
+                            text: emission.text,
+                        };
+                        let notification = ItemCompletedNotification {
+                            thread_id: conversation_id.to_string(),
+                            turn_id: event_turn_id.clone(),
+                            item,
+                        };
+                        outgoing
+                            .send_server_notification(ServerNotification::ItemCompleted(
+                                notification,
+                            ))
+                            .await;
+                    }
+                    return;
+                }
             }
             let item: ThreadItem = item_completed_event.item.clone().into();
             let notification = ItemCompletedNotification {
@@ -1337,9 +1382,10 @@ async fn record_proposed_plan_delta(
     turn_summary_store: &TurnSummaryStore,
 ) {
     let plan_item_id = plan_item_id(event_turn_id);
-    let mut start_agent_message_id: Option<String> = None;
+    let mut start_agent_message = false;
+    let mut start_plan_item = false;
     let mut plan_delta: Option<String> = None;
-    let mut complete_payload: Option<(String, String)> = None;
+    let mut complete_plan_text: Option<String> = None;
 
     {
         let mut map = turn_summary_store.lock().await;
@@ -1347,10 +1393,24 @@ async fn record_proposed_plan_delta(
         if !is_plan_mode(summary) {
             return;
         }
-        summary.last_agent_message_id = Some(item_id.to_string());
 
         match segment {
-            AgentMessageDeltaSegment::Normal => {}
+            AgentMessageDeltaSegment::Normal => {
+                if !delta.is_empty() {
+                    summary
+                        .agent_message_normal_text_by_id
+                        .entry(item_id.to_string())
+                        .and_modify(|text| text.push_str(delta))
+                        .or_insert_with(|| delta.to_string());
+                }
+                if !delta.is_empty()
+                    && summary.pending_agent_message_starts.remove(item_id)
+                    && !summary.agent_message_started.contains(item_id)
+                {
+                    summary.agent_message_started.insert(item_id.to_string());
+                    start_agent_message = true;
+                }
+            }
             AgentMessageDeltaSegment::ProposedPlanStart => {
                 summary.proposed_plan_active = true;
                 summary.proposed_plan_buffer.clear();
@@ -1358,7 +1418,7 @@ async fn record_proposed_plan_delta(
                 if !summary.plan_item_started {
                     summary.plan_item_started = true;
                     summary.plan_item_completed = false;
-                    start_agent_message_id = summary.last_agent_message_id.clone();
+                    start_plan_item = true;
                 }
             }
             AgentMessageDeltaSegment::ProposedPlanDelta => {
@@ -1372,7 +1432,7 @@ async fn record_proposed_plan_delta(
                 if !summary.plan_item_started {
                     summary.plan_item_started = true;
                     summary.plan_item_completed = false;
-                    start_agent_message_id = summary.last_agent_message_id.clone();
+                    start_plan_item = true;
                 }
                 if !delta.is_empty() {
                     plan_delta = Some(delta.to_string());
@@ -1386,25 +1446,20 @@ async fn record_proposed_plan_delta(
 
                 if summary.plan_item_started
                     && !summary.plan_item_completed
-                    && let Some(agent_message_id) = summary.last_agent_message_id.clone()
                     && let Some(text) = proposed_plan_text(summary)
                 {
                     summary.plan_item_completed = true;
-                    complete_payload = Some((text, agent_message_id));
+                    complete_plan_text = Some(text);
                 }
             }
         }
     }
 
-    if let Some(agent_message_id) = start_agent_message_id {
-        emit_plan_item_started(
-            conversation_id,
-            event_turn_id,
-            &plan_item_id,
-            agent_message_id,
-            outgoing,
-        )
-        .await;
+    if start_agent_message {
+        emit_agent_message_started(conversation_id, event_turn_id, item_id, outgoing).await;
+    }
+    if start_plan_item {
+        emit_plan_item_started(conversation_id, event_turn_id, &plan_item_id, outgoing).await;
     }
     if let Some(delta) = plan_delta {
         emit_plan_delta(
@@ -1416,33 +1471,39 @@ async fn record_proposed_plan_delta(
         )
         .await;
     }
-    if let Some((text, agent_message_id)) = complete_payload {
+    if let Some(text) = complete_plan_text {
         emit_plan_item_completed(
             conversation_id,
             event_turn_id,
             &plan_item_id,
             text,
-            agent_message_id,
             outgoing,
         )
         .await;
     }
 }
 
+struct AgentMessageEmission {
+    emit_start: bool,
+    emit_completed: bool,
+    text: String,
+}
+
 async fn record_plan_output(
     conversation_id: ThreadId,
     agent_message: &codex_protocol::items::AgentMessageItem,
     turn_summary_store: &TurnSummaryStore,
-) {
+) -> Option<AgentMessageEmission> {
+    let message_text = agent_message_text(agent_message);
+    let stripped_text = strip_proposed_plan_blocks(&message_text);
     let mut map = turn_summary_store.lock().await;
     let summary = map.entry(conversation_id).or_default();
     if !is_plan_mode(summary) {
-        return;
+        return None;
     }
-    // In plan mode, keep the completed assistant message as the fallback payload
-    // and to associate the plan item with the assistant message id.
-    summary.last_agent_message_id = Some(agent_message.id.clone());
-    summary.last_agent_message_text = Some(agent_message_text(agent_message));
+
+    // Always retain the full assistant message as a fallback for the plan item.
+    summary.last_agent_message_text = Some(message_text);
     if summary.proposed_plan_active
         && summary.last_proposed_plan.is_none()
         && !summary.proposed_plan_buffer.is_empty()
@@ -1450,23 +1511,88 @@ async fn record_plan_output(
         summary.last_proposed_plan = Some(summary.proposed_plan_buffer.clone());
         summary.proposed_plan_active = false;
     }
+
+    let item_id = agent_message.id.clone();
+    let accumulated_text = summary
+        .agent_message_normal_text_by_id
+        .remove(&item_id)
+        .unwrap_or_default();
+    let text = if accumulated_text.is_empty() {
+        stripped_text
+    } else {
+        accumulated_text
+    };
+
+    let was_started = summary.agent_message_started.remove(&item_id);
+    let was_pending = summary.pending_agent_message_starts.remove(&item_id);
+    let emit_start = !was_started && !was_pending && !text.is_empty();
+    let emit_completed = was_started || emit_start || (!text.is_empty() && !was_pending);
+
+    // Ensure we do not leave stale plan streaming state behind.
+    if was_pending && !emit_completed {
+        summary.agent_message_normal_text_by_id.remove(&item_id);
+    }
+
+    Some(AgentMessageEmission {
+        emit_start,
+        emit_completed,
+        text,
+    })
+}
+
+fn strip_proposed_plan_blocks(text: &str) -> String {
+    const OPEN_TAG: &str = "<proposed_plan>";
+    const CLOSE_TAG: &str = "</proposed_plan>";
+
+    let mut output = String::new();
+    let mut remaining = text;
+    while let Some(open_idx) = remaining.find(OPEN_TAG) {
+        output.push_str(&remaining[..open_idx]);
+        let after_open = &remaining[open_idx + OPEN_TAG.len()..];
+        if let Some(close_rel_idx) = after_open.find(CLOSE_TAG) {
+            remaining = &after_open[close_rel_idx + CLOSE_TAG.len()..];
+        } else {
+            remaining = "";
+            break;
+        }
+    }
+    output.push_str(remaining);
+    output
 }
 
 fn plan_item_id(event_turn_id: &str) -> String {
     format!("{event_turn_id}-plan")
 }
 
+async fn emit_agent_message_started(
+    conversation_id: ThreadId,
+    event_turn_id: &str,
+    item_id: &str,
+    outgoing: &OutgoingMessageSender,
+) {
+    let item = ThreadItem::AgentMessage {
+        id: item_id.to_string(),
+        text: String::new(),
+    };
+    let notification = ItemStartedNotification {
+        thread_id: conversation_id.to_string(),
+        turn_id: event_turn_id.to_string(),
+        item,
+    };
+    outgoing
+        .send_server_notification(ServerNotification::ItemStarted(notification))
+        .await;
+}
+
 async fn emit_plan_item_started(
     conversation_id: ThreadId,
     event_turn_id: &str,
     plan_item_id: &str,
-    agent_message_id: String,
     outgoing: &OutgoingMessageSender,
 ) {
     let item = ThreadItem::Plan {
         id: plan_item_id.to_string(),
         text: String::new(),
-        agent_message_id,
     };
     let notification = ItemStartedNotification {
         thread_id: conversation_id.to_string(),
@@ -1501,13 +1627,11 @@ async fn emit_plan_item_completed(
     event_turn_id: &str,
     plan_item_id: &str,
     text: String,
-    agent_message_id: String,
     outgoing: &OutgoingMessageSender,
 ) {
     let item = ThreadItem::Plan {
         id: plan_item_id.to_string(),
         text,
-        agent_message_id,
     };
     let notification = ItemCompletedNotification {
         thread_id: conversation_id.to_string(),
@@ -1523,24 +1647,15 @@ async fn emit_plan_item(
     conversation_id: ThreadId,
     event_turn_id: &str,
     text: String,
-    agent_message_id: String,
     outgoing: &OutgoingMessageSender,
 ) {
     let plan_item_id = plan_item_id(event_turn_id);
-    emit_plan_item_started(
-        conversation_id,
-        event_turn_id,
-        &plan_item_id,
-        agent_message_id.clone(),
-        outgoing,
-    )
-    .await;
+    emit_plan_item_started(conversation_id, event_turn_id, &plan_item_id, outgoing).await;
     emit_plan_item_completed(
         conversation_id,
         event_turn_id,
         &plan_item_id,
         text,
-        agent_message_id,
         outgoing,
     )
     .await;
@@ -1566,7 +1681,6 @@ async fn handle_turn_complete(
     let plan_mode = turn_summary.collaboration_mode_kind == Some(ModeKind::Plan);
     let plan_item_started = turn_summary.plan_item_started;
     let plan_item_completed = turn_summary.plan_item_completed;
-    let last_agent_message_id = turn_summary.last_agent_message_id;
     let last_agent_message_text = turn_summary.last_agent_message_text;
     let last_error = turn_summary.last_error;
 
@@ -1580,29 +1694,14 @@ async fn handle_turn_complete(
     if matches!(status, TurnStatus::Completed)
         && plan_mode
         && !plan_item_completed
-        && let Some(agent_message_id) = last_agent_message_id
         && let Some(text) = plan_text
     {
         if plan_item_started {
             let plan_id = plan_item_id(&event_turn_id);
-            emit_plan_item_completed(
-                conversation_id,
-                &event_turn_id,
-                &plan_id,
-                text,
-                agent_message_id,
-                outgoing,
-            )
-            .await;
+            emit_plan_item_completed(conversation_id, &event_turn_id, &plan_id, text, outgoing)
+                .await;
         } else {
-            emit_plan_item(
-                conversation_id,
-                &event_turn_id,
-                text,
-                agent_message_id,
-                outgoing,
-            )
-            .await;
+            emit_plan_item(conversation_id, &event_turn_id, text, outgoing).await;
         }
     }
     emit_turn_completed_with_status(conversation_id, event_turn_id, status, error, outgoing).await;
@@ -2361,16 +2460,13 @@ mod tests {
         let outgoing = Arc::new(OutgoingMessageSender::new(tx));
 
         let plan_text = "Final plan text".to_string();
-        let agent_message_id = "msg-plan".to_string();
         let expected_started_item = ThreadItem::Plan {
             id: format!("{event_turn_id}-plan"),
             text: String::new(),
-            agent_message_id: agent_message_id.clone(),
         };
         let expected_completed_item = ThreadItem::Plan {
             id: format!("{event_turn_id}-plan"),
             text: plan_text.clone(),
-            agent_message_id: agent_message_id.clone(),
         };
 
         {
@@ -2379,7 +2475,6 @@ mod tests {
                 conversation_id,
                 TurnSummary {
                     collaboration_mode_kind: Some(ModeKind::Plan),
-                    last_agent_message_id: Some(agent_message_id),
                     last_agent_message_text: Some(plan_text.clone()),
                     ..Default::default()
                 },
@@ -2429,6 +2524,102 @@ mod tests {
             other => bail!("unexpected message: {other:?}"),
         }
         assert!(rx.try_recv().is_err(), "no extra messages expected");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn plan_only_agent_messages_do_not_emit_agent_message_items() -> Result<()> {
+        let conversation_id = ThreadId::new();
+        let event_turn_id = "plan_only".to_string();
+        let turn_summary_store = new_turn_summary_store();
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(tx));
+
+        let item_id = "msg-plan";
+        {
+            let mut map = turn_summary_store.lock().await;
+            map.insert(
+                conversation_id,
+                TurnSummary {
+                    collaboration_mode_kind: Some(ModeKind::Plan),
+                    pending_agent_message_starts: [item_id.to_string()].into_iter().collect(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        record_proposed_plan_delta(
+            conversation_id,
+            &event_turn_id,
+            item_id,
+            "",
+            AgentMessageDeltaSegment::ProposedPlanStart,
+            &outgoing,
+            &turn_summary_store,
+        )
+        .await;
+        record_proposed_plan_delta(
+            conversation_id,
+            &event_turn_id,
+            item_id,
+            "- step\n",
+            AgentMessageDeltaSegment::ProposedPlanDelta,
+            &outgoing,
+            &turn_summary_store,
+        )
+        .await;
+        record_proposed_plan_delta(
+            conversation_id,
+            &event_turn_id,
+            item_id,
+            "",
+            AgentMessageDeltaSegment::ProposedPlanEnd,
+            &outgoing,
+            &turn_summary_store,
+        )
+        .await;
+
+        let plan_block = "<proposed_plan>\n- step\n</proposed_plan>\n".to_string();
+        let agent_message = codex_protocol::items::AgentMessageItem {
+            id: item_id.to_string(),
+            content: vec![codex_protocol::items::AgentMessageContent::Text { text: plan_block }],
+        };
+        let emission = record_plan_output(conversation_id, &agent_message, &turn_summary_store)
+            .await
+            .ok_or_else(|| anyhow!("plan mode should return an emission"))?;
+        assert!(!emission.emit_start);
+        assert!(!emission.emit_completed);
+
+        let mut saw_plan_started = false;
+        let mut saw_plan_delta = false;
+        let mut saw_plan_completed = false;
+
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                OutgoingMessage::AppServerNotification(ServerNotification::ItemStarted(n)) => {
+                    if matches!(n.item, ThreadItem::Plan { .. }) {
+                        saw_plan_started = true;
+                    } else if matches!(n.item, ThreadItem::AgentMessage { .. }) {
+                        bail!("agent message should not be started for plan-only output");
+                    }
+                }
+                OutgoingMessage::AppServerNotification(ServerNotification::PlanDelta(_)) => {
+                    saw_plan_delta = true;
+                }
+                OutgoingMessage::AppServerNotification(ServerNotification::ItemCompleted(n)) => {
+                    if matches!(n.item, ThreadItem::Plan { .. }) {
+                        saw_plan_completed = true;
+                    } else if matches!(n.item, ThreadItem::AgentMessage { .. }) {
+                        bail!("agent message should not be completed for plan-only output");
+                    }
+                }
+                other => bail!("unexpected message: {other:?}"),
+            }
+        }
+
+        assert!(saw_plan_started);
+        assert!(saw_plan_delta);
+        assert!(saw_plan_completed);
         Ok(())
     }
 

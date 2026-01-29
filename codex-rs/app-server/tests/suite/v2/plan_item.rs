@@ -63,7 +63,6 @@ async fn plan_mode_uses_proposed_plan_block_for_plan_item() -> Result<()> {
     let expected_plan = ThreadItem::Plan {
         id: format!("{}-plan", turn.id),
         text: "# Final plan\n- first\n- second\n".to_string(),
-        agent_message_id: "msg-1".to_string(),
     };
     let expected_plan_id = format!("{}-plan", turn.id);
     let streamed_plan = plan_deltas
@@ -117,7 +116,6 @@ async fn plan_mode_without_proposed_plan_falls_back_to_agent_message() -> Result
     let expected_plan = ThreadItem::Plan {
         id: format!("{}-plan", turn.id),
         text: "Done".to_string(),
-        agent_message_id: "msg-1".to_string(),
     };
     let plan_items = completed_items
         .iter()
