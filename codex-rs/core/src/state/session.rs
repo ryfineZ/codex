@@ -1,10 +1,11 @@
 //! Session-wide mutable state.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use std::collections::HashSet;
+use codex_protocol::request_user_input::RequestUserInputQuestion;
 
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
@@ -26,6 +27,7 @@ pub(crate) struct SessionState {
     /// timestamp when resuming a session. Remove this once SQLite is in place.
     pub(crate) initial_context_seeded: bool,
     pending_user_input_items: HashMap<String, ResponseInputItem>,
+    request_user_input_calls: HashMap<String, Vec<RequestUserInputQuestion>>,
 }
 
 impl SessionState {
@@ -40,6 +42,7 @@ impl SessionState {
             mcp_dependency_prompted: HashSet::new(),
             initial_context_seeded: false,
             pending_user_input_items: HashMap::new(),
+            request_user_input_calls: HashMap::new(),
         }
     }
 
@@ -151,6 +154,25 @@ impl SessionState {
     #[cfg(test)]
     pub(crate) fn has_pending_user_input_items(&self) -> bool {
         !self.pending_user_input_items.is_empty()
+    }
+
+    pub(crate) fn upsert_request_user_input_call(
+        &mut self,
+        call_id: String,
+        questions: Vec<RequestUserInputQuestion>,
+    ) {
+        self.request_user_input_calls.insert(call_id, questions);
+    }
+
+    pub(crate) fn request_user_input_questions(
+        &self,
+        call_id: &str,
+    ) -> Option<Vec<RequestUserInputQuestion>> {
+        self.request_user_input_calls.get(call_id).cloned()
+    }
+
+    pub(crate) fn has_request_user_input_call(&self, call_id: &str) -> bool {
+        self.request_user_input_calls.contains_key(call_id)
     }
 }
 
