@@ -497,7 +497,7 @@ impl Tui {
                 self.pending_history_lines.clear();
             }
 
-            // Update the y position for suspending so Ctrl-Z can place the cursor correctly.
+            // Update the y position for suspending so the suspend key can place the cursor correctly.
             #[cfg(unix)]
             {
                 let inline_area_bottom = if self.alt_screen_active.load(Ordering::Relaxed) {

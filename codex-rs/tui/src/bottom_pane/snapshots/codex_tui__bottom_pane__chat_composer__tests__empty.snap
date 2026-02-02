@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/chat_composer.rs
+assertion_line: 4305
 expression: terminal.backend()
 ---
 "                                                                                                    "
@@ -11,4 +12,4 @@ expression: terminal.backend()
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
-"  ? for shortcuts                                                                100% context left  "
+"  ? for shortcuts · ctrl + z undo · ctrl + y redo · ctrl + r yank                100% context left  "

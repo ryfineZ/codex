@@ -1,5 +1,6 @@
 ---
 source: tui/src/bottom_pane/footer.rs
+assertion_line: 1102
 expression: terminal.backend()
 ---
-"  ? for shortcuts · Plan mode (shift+tab to cycle)                                                   100% context left  "
+"  ? for shortcuts · ctrl + z undo · ctrl + y redo · ctrl + r yank · Plan mode (shift+tab to cycle)   100% context left  "
