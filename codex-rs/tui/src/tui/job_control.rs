@@ -22,7 +22,7 @@ use super::DisableAlternateScroll;
 use super::EnableAlternateScroll;
 use super::Terminal;
 
-pub const SUSPEND_KEY: key_hint::KeyBinding = key_hint::ctrl(KeyCode::Char('z'));
+pub const SUSPEND_KEY: key_hint::KeyBinding = key_hint::ctrl(KeyCode::Char('\\'));
 
 /// Coordinates suspend/resume handling so the TUI can restore terminal context after SIGTSTP.
 ///

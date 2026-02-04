@@ -234,7 +234,8 @@ pub(crate) fn left_fits(area: Rect, left_width: u16) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SummaryHintKind {
     None,
-    Shortcuts,
+    ShortcutsFull,
+    ShortcutsCompact,
     QueueMessage,
     QueueShort,
 }
@@ -250,26 +251,52 @@ fn left_side_line(
     state: LeftSideState,
 ) -> Line<'static> {
     let mut line = Line::from("");
+    let mut has_content = false;
+    let push_separator = |line: &mut Line<'static>, has_content: &mut bool| {
+        if *has_content {
+            line.push_span(" · ".dim());
+        }
+    };
+
     match state.hint {
         SummaryHintKind::None => {}
-        SummaryHintKind::Shortcuts => {
+        SummaryHintKind::ShortcutsFull => {
+            push_separator(&mut line, &mut has_content);
             line.push_span(key_hint::plain(KeyCode::Char('?')));
             line.push_span(" for shortcuts".dim());
+            line.push_span(" · ".dim());
+            line.push_span(key_hint::ctrl(KeyCode::Char('z')));
+            line.push_span(" undo".dim());
+            line.push_span(" · ".dim());
+            line.push_span(key_hint::ctrl(KeyCode::Char('y')));
+            line.push_span(" redo".dim());
+            line.push_span(" · ".dim());
+            line.push_span(key_hint::ctrl(KeyCode::Char('r')));
+            line.push_span(" yank".dim());
+            has_content = true;
+        }
+        SummaryHintKind::ShortcutsCompact => {
+            push_separator(&mut line, &mut has_content);
+            line.push_span(key_hint::plain(KeyCode::Char('?')));
+            line.push_span(" for shortcuts".dim());
+            has_content = true;
         }
         SummaryHintKind::QueueMessage => {
+            push_separator(&mut line, &mut has_content);
             line.push_span(key_hint::plain(KeyCode::Tab));
             line.push_span(" to queue message".dim());
+            has_content = true;
         }
         SummaryHintKind::QueueShort => {
+            push_separator(&mut line, &mut has_content);
             line.push_span(key_hint::plain(KeyCode::Tab));
             line.push_span(" to queue".dim());
+            has_content = true;
         }
     };
 
     if let Some(collaboration_mode_indicator) = collaboration_mode_indicator {
-        if !matches!(state.hint, SummaryHintKind::None) {
-            line.push_span(" · ".dim());
-        }
+        push_separator(&mut line, &mut has_content);
         line.push_span(collaboration_mode_indicator.styled_span(state.show_cycle_hint));
     }
 
@@ -295,7 +322,7 @@ pub(crate) fn single_line_footer_layout(
     let hint_kind = if show_queue_hint {
         SummaryHintKind::QueueMessage
     } else if show_shortcuts_hint {
-        SummaryHintKind::Shortcuts
+        SummaryHintKind::ShortcutsFull
     } else {
         SummaryHintKind::None
     };
@@ -410,6 +437,20 @@ pub(crate) fn single_line_footer_layout(
                 false, // show_context
             );
         }
+    } else if show_shortcuts_hint {
+        let compact_state = LeftSideState {
+            hint: SummaryHintKind::ShortcutsCompact,
+            show_cycle_hint,
+        };
+        let compact_width = state_width(compact_state);
+        if compact_width > 0 && can_show_left_with_context(area, compact_width, context_width) {
+            return (SummaryLeft::Custom(state_line(compact_state)), true);
+        }
+        if compact_width > 0 && left_fits(area, compact_width) {
+            return (SummaryLeft::Custom(state_line(compact_state)), false);
+        }
+    } else if default_width > 0 && left_fits(area, default_width) {
+        return (SummaryLeft::Default, false);
     }
 
     // Final fallback: if queue variants (or other earlier states) could not fit
@@ -547,7 +588,7 @@ fn footer_from_props_lines(
         FooterMode::ComposerEmpty => {
             let state = LeftSideState {
                 hint: if show_shortcuts_hint {
-                    SummaryHintKind::Shortcuts
+                    SummaryHintKind::ShortcutsFull
                 } else {
                     SummaryHintKind::None
                 },
@@ -744,17 +785,17 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
-    if let Some(percent) = percent {
+    let label = if let Some(percent) = percent {
         let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
-    }
-
-    if let Some(tokens) = used_tokens {
+        format!("{percent}% context left")
+    } else if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
-        return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
-    }
+        format!("{used_fmt} used")
+    } else {
+        "100% context left".to_string()
+    };
 
-    Line::from(vec![Span::from("100% context left").dim()])
+    Line::from(Span::from(label).dim())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -981,7 +1022,7 @@ mod tests {
                     props.context_window_percent,
                     props.context_window_used_tokens,
                 );
-                let context_width = context_line.width() as u16;
+                let right_width = context_line.width() as u16;
                 let show_cycle_hint = !props.is_task_running;
                 let show_shortcuts_hint = match props.mode {
                     FooterMode::ComposerEmpty => true,
@@ -1005,14 +1046,14 @@ mod tests {
                     show_queue_hint,
                 );
                 let can_show_left_and_context =
-                    can_show_left_with_context(area, left_width, context_width);
+                    can_show_left_with_context(area, left_width, right_width);
                 if matches!(
                     props.mode,
                     FooterMode::ComposerEmpty | FooterMode::ComposerHasDraft
                 ) {
                     let (summary_left, show_context) = single_line_footer_layout(
                         area,
-                        context_width,
+                        right_width,
                         collaboration_mode_indicator,
                         show_cycle_hint,
                         show_shortcuts_hint,

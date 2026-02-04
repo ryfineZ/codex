@@ -3103,7 +3103,6 @@ impl ChatComposer {
                     footer_props.context_window_percent,
                     footer_props.context_window_used_tokens,
                 );
-                let context_width = context_line.width() as u16;
                 let custom_height = self.custom_footer_height();
                 let footer_hint_height =
                     custom_height.unwrap_or_else(|| footer_height(footer_props));
@@ -3118,6 +3117,8 @@ impl ChatComposer {
                 } else {
                     popup_rect
                 };
+                let context_width = context_line.width() as u16;
+                let has_context = context_width > 0;
                 let left_width = if self.footer_flash_visible() {
                     self.footer_flash
                         .as_ref()
@@ -3167,6 +3168,8 @@ impl ChatComposer {
                         | FooterMode::QuitShortcutReminder
                         | FooterMode::ShortcutOverlay
                 ) {
+                    false
+                } else if !has_context {
                     false
                 } else {
                     single_line_layout

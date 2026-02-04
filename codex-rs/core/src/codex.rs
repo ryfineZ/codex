@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -26,6 +27,7 @@ use crate::features::maybe_push_unstable_features_warning;
 use crate::models_manager::manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
+use crate::rollout::INTERACTIVE_SESSION_SOURCES;
 use crate::rollout::session_index;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::handle_non_tool_response_item;
@@ -757,6 +759,7 @@ impl Session {
         skills_manager: Arc<SkillsManager>,
         agent_control: AgentControl,
     ) -> anyhow::Result<Arc<Self>> {
+        let session_source_for_poller = session_source.clone();
         debug!(
             "Configuring session: model={}; provider={:?}",
             session_configuration.collaboration_mode.model(),
@@ -996,6 +999,13 @@ impl Session {
         for event in events {
             sess.send_event_raw(event).await;
         }
+
+        spawn_skills_update_poller(
+            &sess,
+            Arc::clone(&sess.services.skills_manager),
+            session_configuration.cwd.clone(),
+            session_source_for_poller,
+        );
 
         // Construct sandbox_state before initialize() so it can be sent to each
         // MCP server immediately after it becomes ready (avoiding blocking).
@@ -2425,6 +2435,40 @@ impl Session {
             .await
             .cancel();
     }
+}
+
+fn spawn_skills_update_poller(
+    sess: &Arc<Session>,
+    skills_manager: Arc<SkillsManager>,
+    cwd: PathBuf,
+    session_source: SessionSource,
+) {
+    if !INTERACTIVE_SESSION_SOURCES.contains(&session_source) {
+        return;
+    }
+    let sess = Arc::downgrade(sess);
+    tokio::spawn(async move {
+        let mut last_outcome = skills_manager.skills_for_cwd(&cwd, true).await;
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            let Some(sess) = sess.upgrade() else {
+                break;
+            };
+            let outcome = skills_manager.skills_for_cwd(&cwd, true).await;
+            let changed = outcome.skills != last_outcome.skills
+                || outcome.errors != last_outcome.errors
+                || outcome.disabled_paths != last_outcome.disabled_paths;
+            if changed {
+                last_outcome = outcome;
+                sess.send_event_raw(Event {
+                    id: "skills-update".to_string(),
+                    msg: EventMsg::SkillsUpdateAvailable,
+                })
+                .await;
+            }
+        }
+    });
 }
 
 async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiver<Submission>) {

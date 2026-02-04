@@ -18,6 +18,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+const MAX_UNDO_HISTORY: usize = 100;
 
 fn is_word_separator(ch: char) -> bool {
     WORD_SEPARATORS.contains(ch)
@@ -28,6 +29,14 @@ struct TextElement {
     range: Range<usize>,
 }
 
+#[derive(Debug, Clone)]
+struct TextSnapshot {
+    text: String,
+    cursor_pos: usize,
+    elements: Vec<TextElement>,
+    kill_buffer: String,
+}
+
 #[derive(Debug)]
 pub(crate) struct TextArea {
     text: String,
@@ -36,6 +45,8 @@ pub(crate) struct TextArea {
     preferred_col: Option<usize>,
     elements: Vec<TextElement>,
     kill_buffer: String,
+    undo_stack: Vec<TextSnapshot>,
+    redo_stack: Vec<TextSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +70,8 @@ impl TextArea {
             preferred_col: None,
             elements: Vec::new(),
             kill_buffer: String::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -73,6 +86,10 @@ impl TextArea {
     }
 
     fn set_text_inner(&mut self, text: &str, elements: Option<&[UserTextElement]>) {
+        let will_change = self.text != text || elements.is_some() || !self.elements.is_empty();
+        if will_change {
+            self.record_undo_snapshot();
+        }
         // Stage 1: replace the raw text and keep the cursor in a safe byte range.
         self.text = text.to_string();
         self.cursor_pos = self.cursor_pos.clamp(0, self.text.len());
@@ -107,6 +124,10 @@ impl TextArea {
     }
 
     pub fn insert_str_at(&mut self, pos: usize, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.record_undo_snapshot();
         let pos = self.clamp_pos_for_insertion(pos);
         self.text.insert_str(pos, text);
         self.wrap_cache.replace(None);
@@ -133,6 +154,7 @@ impl TextArea {
         }
         let diff = inserted_len as isize - removed_len as isize;
 
+        self.record_undo_snapshot();
         self.text.replace_range(range, text);
         self.wrap_cache.replace(None);
         self.preferred_col = None;
@@ -260,6 +282,13 @@ impl TextArea {
                 self.move_cursor_down();
             }
             KeyEvent {
+                code: KeyCode::Char('z' | 'Z'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.undo();
+            }
+            KeyEvent {
                 code: KeyCode::Char(c),
                 // Insert plain characters (and Shift-modified). Do NOT insert when ALT is held,
                 // because many terminals map Option/Meta combos to ALT+<char> (e.g. ESC f/ESC b)
@@ -358,11 +387,18 @@ impl TextArea {
                 self.kill_to_end_of_line();
             }
             KeyEvent {
-                code: KeyCode::Char('y'),
+                code: KeyCode::Char('r' | 'R'),
                 modifiers: KeyModifiers::CONTROL,
                 ..
             } => {
                 self.yank();
+            }
+            KeyEvent {
+                code: KeyCode::Char('y'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.redo();
             }
 
             // Cursor movement
@@ -574,8 +610,8 @@ impl TextArea {
             return;
         }
 
-        self.kill_buffer = removed;
         self.replace_range_raw(range, "");
+        self.kill_buffer = removed;
     }
 
     /// Move the cursor left by a single grapheme cluster.
@@ -790,6 +826,7 @@ impl TextArea {
         let inserted_len = new.len();
         let diff = inserted_len as isize - removed_len as isize;
 
+        self.record_undo_snapshot();
         self.text.replace_range(range, new);
         self.wrap_cache.replace(None);
         self.preferred_col = None;
@@ -888,6 +925,56 @@ impl TextArea {
         let elem = TextElement { range };
         self.elements.push(elem);
         self.elements.sort_by_key(|e| e.range.start);
+    }
+
+    fn snapshot(&self) -> TextSnapshot {
+        TextSnapshot {
+            text: self.text.clone(),
+            cursor_pos: self.cursor_pos,
+            elements: self.elements.clone(),
+            kill_buffer: self.kill_buffer.clone(),
+        }
+    }
+
+    fn record_undo_snapshot(&mut self) {
+        self.undo_stack.push(self.snapshot());
+        self.trim_undo_history();
+        self.redo_stack.clear();
+    }
+
+    fn trim_undo_history(&mut self) {
+        if self.undo_stack.len() > MAX_UNDO_HISTORY {
+            let excess = self.undo_stack.len() - MAX_UNDO_HISTORY;
+            self.undo_stack.drain(0..excess);
+        }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: TextSnapshot) {
+        self.text = snapshot.text;
+        self.cursor_pos = snapshot.cursor_pos.clamp(0, self.text.len());
+        self.elements = snapshot.elements;
+        self.kill_buffer = snapshot.kill_buffer;
+        self.elements.sort_by_key(|e| e.range.start);
+        self.cursor_pos = self.clamp_pos_to_nearest_boundary(self.cursor_pos);
+        self.wrap_cache.replace(None);
+        self.preferred_col = None;
+    }
+
+    pub fn undo(&mut self) {
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return;
+        };
+        self.redo_stack.push(self.snapshot());
+        self.restore_snapshot(snapshot);
+    }
+
+    pub fn redo(&mut self) {
+        let Some(snapshot) = self.redo_stack.pop() else {
+            return;
+        };
+        self.undo_stack.push(self.snapshot());
+        self.trim_undo_history();
+        self.restore_snapshot(snapshot);
     }
 
     fn find_element_containing(&self, pos: usize) -> Option<usize> {
@@ -1348,6 +1435,86 @@ mod tests {
         t.replace_range(0..1, "AA");
         assert_eq!(t.text(), "AAbcd");
         assert_eq!(t.cursor(), 5);
+    }
+
+    #[test]
+    fn undo_redo_basic_edits() {
+        let mut t = TextArea::new();
+        t.insert_str("hello");
+        assert_eq!(t.text(), "hello");
+
+        t.undo();
+        assert_eq!(t.text(), "");
+
+        t.redo();
+        assert_eq!(t.text(), "hello");
+
+        t.delete_backward(1);
+        assert_eq!(t.text(), "hell");
+
+        t.undo();
+        assert_eq!(t.text(), "hello");
+    }
+
+    #[test]
+    fn undo_clears_redo_after_new_edit() {
+        let mut t = TextArea::new();
+        t.insert_str("a");
+        t.undo();
+        assert_eq!(t.text(), "");
+
+        t.insert_str("b");
+        t.redo();
+        assert_eq!(t.text(), "b");
+    }
+
+    #[test]
+    fn undo_restores_elements() {
+        let mut t = TextArea::new();
+        t.insert_element("<element>");
+        assert_eq!(t.text_elements().len(), 1);
+
+        t.undo();
+        assert_eq!(t.text_elements().len(), 0);
+        assert_eq!(t.text(), "");
+    }
+
+    #[test]
+    fn undo_restores_kill_buffer() {
+        let mut t = TextArea::new();
+        t.insert_str("abc");
+        t.delete_backward_word();
+        assert_eq!(t.text(), "");
+
+        t.undo();
+        assert_eq!(t.text(), "abc");
+
+        t.yank();
+        assert_eq!(t.text(), "abc");
+    }
+
+    #[test]
+    fn set_text_is_undoable() {
+        let mut t = TextArea::new();
+        t.insert_str("hello");
+        t.set_text_clearing_elements("world");
+        assert_eq!(t.text(), "world");
+
+        t.undo();
+        assert_eq!(t.text(), "hello");
+    }
+
+    #[test]
+    fn control_y_redoes_after_undo() {
+        let mut t = TextArea::new();
+        t.insert_str("abc");
+        assert_eq!(t.text(), "abc");
+
+        t.input(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(t.text(), "");
+
+        t.input(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(t.text(), "abc");
     }
 
     #[test]
